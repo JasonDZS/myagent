@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "myagent"
+version = "0.1.0"
+description = "Lightweight toolkit for building tool-aware LLM agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5",
+    "python-dotenv>=1.0",
+    "openai>=1.0",
+    "duckduckgo-search>=6.1",
+    "tiktoken>=0.7",
+    "tenacity>=8.2",
+    "loguru>=0.7",
+    "ddgs>=9.6.0",
+    "pymysql>=1.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["myagent"]
+
+[tool.hatch.build.targets.sdist]
+include = ["myagent"]
+
+[tool.uv]
+package = true
