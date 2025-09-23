@@ -259,7 +259,10 @@ class BaseAgent(BaseModel, ABC):
             "step_number": self.current_step,
             "max_steps": self.max_steps,
             "agent_state": str(self.state),
-            "memory_size": len(self.memory.messages)
+            "memory_size": len(self.memory.messages),
+            "all_messages": self._get_recent_messages_summary(),
+            "system_prompt": self.system_prompt or "",
+            "next_step_prompt": self.next_step_prompt or ""
         }
         
         async with trace_manager.run(
@@ -267,9 +270,175 @@ class BaseAgent(BaseModel, ABC):
             run_type=RunType.AGENT,
             inputs=inputs
         ) as run_ctx:
-            result = await self.step()
-            run_ctx.outputs["result"] = result
+            # Check if this is a ReActAgent to provide detailed tracing
+            if hasattr(self, 'think') and hasattr(self, 'act'):
+                result = await self._traced_react_step(run_ctx)
+            else:
+                result = await self.step()
+                run_ctx.outputs["result"] = result
+            
             return result
+    
+    async def _traced_react_step(self, parent_run_ctx) -> str:
+        """Execute a ReAct step with detailed think/act tracing."""
+        trace_manager = get_trace_manager()
+        
+        # Trace thinking process
+        think_inputs = {
+            "memory_state": self._get_memory_state_summary(),
+            "current_context": self._get_current_context()
+        }
+        
+        async with trace_manager.run(
+            name=f"think_step_{self.current_step}",
+            run_type=RunType.THINK,
+            inputs=think_inputs,
+            parent_run_id=parent_run_ctx.id
+        ) as think_run:
+            should_act = await self.think()
+            think_run.outputs.update({
+                "should_act": should_act,
+                "decision": "proceed_to_action" if should_act else "thinking_complete",
+                "memory_after_think": self._get_memory_state_summary()
+            })
+            
+            if not should_act:
+                parent_run_ctx.outputs["result"] = "Thinking complete - no action needed"
+                return "Thinking complete - no action needed"
+        
+        # Trace action process
+        act_inputs = {
+            "memory_state": self._get_memory_state_summary(),
+            "decision_context": "proceeding_with_action"
+        }
+        
+        async with trace_manager.run(
+            name=f"act_step_{self.current_step}",
+            run_type=RunType.ACT,
+            inputs=act_inputs,
+            parent_run_id=parent_run_ctx.id
+        ) as act_run:
+            result = await self.act()
+            act_run.outputs.update({
+                "action_result": result,
+                "memory_after_act": self._get_memory_state_summary()
+            })
+            
+            parent_run_ctx.outputs["result"] = result
+            return result
+    
+    def _get_recent_messages_summary(self, limit: int = None) -> list:
+        """Get a summary of messages for tracing.
+        
+        Args:
+            limit: Maximum number of recent messages to include. 
+                   If None, includes all messages in memory.
+        
+        Returns:
+            List of message summaries with tool call information.
+        """
+        if limit is None:
+            # Get all messages
+            recent_messages = self.memory.messages
+        else:
+            # Get limited recent messages
+            recent_messages = self.memory.get_recent_messages(limit)
+        summary = []
+        
+        for msg in recent_messages:
+            msg_summary = {
+                "role": msg.role,
+                "content": msg.content[:200] + "..." if msg.content and len(msg.content) > 200 else msg.content,
+                "has_tool_calls": bool(msg.tool_calls)
+            }
+            
+            # Add tool call details if present
+            if msg.tool_calls:
+                msg_summary["tool_calls"] = [
+                    {
+                        "id": tool_call.id,
+                        "type": tool_call.type,
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments[:100] + "..." 
+                            if len(tool_call.function.arguments) > 100 
+                            else tool_call.function.arguments
+                        }
+                    }
+                    for tool_call in msg.tool_calls
+                ]
+                msg_summary["tool_call_count"] = len(msg.tool_calls)
+            
+            # Add additional info for tool messages
+            if msg.role == "tool":
+                msg_summary["tool_name"] = msg.name
+                msg_summary["tool_call_id"] = msg.tool_call_id
+            
+            summary.append(msg_summary)
+        
+        return summary
+    
+    def _get_memory_state_summary(self) -> dict:
+        """Get a summary of current memory state."""
+        tool_stats = self._get_tool_usage_stats()
+        return {
+            "total_messages": len(self.memory.messages),
+            "all_messages": self._get_recent_messages_summary(),
+            "message_types": self._count_message_types(),
+            "tool_usage": tool_stats
+        }
+    
+    def _count_message_types(self) -> dict:
+        """Count messages by type."""
+        counts = {}
+        for msg in self.memory.messages:
+            counts[msg.role] = counts.get(msg.role, 0) + 1
+        return counts
+    
+    def _get_tool_usage_stats(self) -> dict:
+        """Get statistics about tool usage in memory."""
+        tool_stats = {
+            "total_tool_calls": 0,
+            "total_tool_responses": 0,
+            "tools_used": {},
+            "recent_tool_calls": []
+        }
+        
+        for msg in self.memory.messages:
+            # Count tool calls from assistant messages
+            if msg.role == "assistant" and msg.tool_calls:
+                tool_stats["total_tool_calls"] += len(msg.tool_calls)
+                
+                for tool_call in msg.tool_calls:
+                    tool_name = tool_call.function.name
+                    tool_stats["tools_used"][tool_name] = tool_stats["tools_used"].get(tool_name, 0) + 1
+                    
+                    # Add to recent tool calls (last 5)
+                    if len(tool_stats["recent_tool_calls"]) < 5:
+                        tool_stats["recent_tool_calls"].append({
+                            "tool_name": tool_name,
+                            "tool_id": tool_call.id,
+                            "arguments_preview": tool_call.function.arguments[:50] + "..." 
+                            if len(tool_call.function.arguments) > 50 
+                            else tool_call.function.arguments
+                        })
+            
+            # Count tool response messages
+            elif msg.role == "tool":
+                tool_stats["total_tool_responses"] += 1
+        
+        return tool_stats
+    
+    def _get_current_context(self) -> dict:
+        """Get current agent context for thinking."""
+        return {
+            "agent_name": self.name,
+            "current_step": self.current_step,
+            "max_steps": self.max_steps,
+            "state": str(self.state),
+            "has_system_prompt": bool(self.system_prompt),
+            "has_next_step_prompt": bool(self.next_step_prompt)
+        }
 
     @abstractmethod
     async def step(self) -> str:

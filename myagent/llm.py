@@ -30,6 +30,12 @@ from .schema import (
     ToolChoice,
 )
 
+try:
+    from .trace import get_trace_manager, RunType
+    TRACE_AVAILABLE = True
+except ImportError:
+    TRACE_AVAILABLE = False
+
 
 REASONING_MODELS = ["o1", "o3-mini", "Qwen/Qwen3-32B"]
 MULTIMODAL_MODELS = [
@@ -192,6 +198,7 @@ class LLM:
             self.max_tokens = llm_config.max_tokens
             self.temperature = llm_config.temperature
             self.api_type = llm_config.api_type
+            self.enable_tracing = True  # Enable tracing by default
             self.api_key = llm_config.api_key
             self.api_version = llm_config.api_version
             self.base_url = llm_config.base_url
@@ -257,6 +264,59 @@ class LLM:
             return f"Request may exceed input token limit (Current: {self.total_input_tokens}, Needed: {input_tokens}, Max: {self.max_input_tokens})"
 
         return "Token limit exceeded"
+
+    async def _traced_llm_call(self, method_name: str, inputs: dict, llm_call_func):
+        """Wrapper for LLM calls with tracing."""
+        if not self.enable_tracing or not TRACE_AVAILABLE:
+            return await llm_call_func()
+        
+        trace_manager = get_trace_manager()
+        
+        # Prepare inputs for tracing
+        trace_inputs = {
+            "model": self.model,
+            "temperature": inputs.get("temperature", self.temperature),
+            "max_tokens": self.max_tokens,
+            "method": method_name,
+            "message_count": len(inputs.get("messages", [])),
+            "has_system_msgs": bool(inputs.get("system_msgs")),
+            "stream": inputs.get("stream", False)
+        }
+        
+        # Add message preview (first 200 chars of each message)
+        if "messages" in inputs:
+            trace_inputs["message_preview"] = [
+                {
+                    "role": msg.get("role", "unknown") if isinstance(msg, dict) else msg.role,
+                    "content": (msg.get("content", "") if isinstance(msg, dict) else msg.content or "")[:200] + "..."
+                }
+                for msg in inputs["messages"][:3]  # Only first 3 messages
+            ]
+        
+        async with trace_manager.run(
+            name=f"llm_{method_name}",
+            run_type=RunType.LLM,
+            inputs=trace_inputs
+        ) as run_ctx:
+            try:
+                result = await llm_call_func()
+                
+                # Record outputs
+                run_ctx.outputs.update({
+                    "response_length": len(result) if isinstance(result, str) else 0,
+                    "response_preview": result[:200] + "..." if isinstance(result, str) and len(result) > 200 else result
+                })
+                
+                # Try to get token usage if available
+                if hasattr(self, '_last_token_usage') and self._last_token_usage:
+                    run_ctx.token_usage = self._last_token_usage
+                    self._last_token_usage = None  # Clear after use
+                
+                return result
+                
+            except Exception as e:
+                run_ctx.fail(str(e), type(e).__name__)
+                raise
 
     @staticmethod
     def format_messages(
@@ -378,6 +438,28 @@ class LLM:
             OpenAIError: If API call fails after retries
             Exception: For unexpected errors
         """
+        # Use tracing wrapper
+        inputs = {
+            "messages": messages,
+            "system_msgs": system_msgs,
+            "stream": stream,
+            "temperature": temperature
+        }
+        
+        return await self._traced_llm_call(
+            "ask",
+            inputs,
+            lambda: self._ask_impl(messages, system_msgs, stream, temperature)
+        )
+    
+    async def _ask_impl(
+        self,
+        messages: List[Union[dict, Message]],
+        system_msgs: Optional[List[Union[dict, Message]]] = None,
+        stream: bool = True,
+        temperature: Optional[float] = None,
+    ) -> str:
+        """Internal implementation of ask method."""
         try:
             # Check if the model supports images
             supports_images = self.model in MULTIMODAL_MODELS

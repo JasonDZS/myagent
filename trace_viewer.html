@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Trace Viewer</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f8fafc;
+            color: #334155;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            border: 1px solid #e2e8f0;
+        }
+
+        .header h1 {
+            color: #1e293b;
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #64748b;
+            font-size: 16px;
+        }
+
+        .trace-list {
+            background: white;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+            overflow: hidden;
+            margin-bottom: 24px;
+        }
+
+        .trace-item {
+            padding: 20px 24px;
+            border-bottom: 1px solid #f1f5f9;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .trace-item:hover {
+            background: #f8fafc;
+        }
+
+        .trace-item:last-child {
+            border-bottom: none;
+        }
+
+        .trace-info {
+            flex: 1;
+        }
+
+        .trace-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 4px;
+        }
+
+        .trace-meta {
+            display: flex;
+            gap: 16px;
+            font-size: 14px;
+            color: #64748b;
+            margin-bottom: 8px;
+        }
+
+        .trace-request {
+            font-size: 14px;
+            color: #475569;
+            background: #f1f5f9;
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-top: 8px;
+            max-width: 600px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .trace-stats {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .stat-badge {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .stat-runs {
+            background: #ddd6fe;
+            color: #7c3aed;
+        }
+
+        .stat-duration {
+            background: #dcfce7;
+            color: #16a34a;
+        }
+
+        .stat-status {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .status-success {
+            background: #dcfce7;
+            color: #16a34a;
+        }
+
+        .status-error {
+            background: #fecaca;
+            color: #dc2626;
+        }
+
+        .status-running {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        .trace-detail {
+            background: white;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+            margin-bottom: 24px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .trace-detail.active {
+            display: block;
+        }
+
+        .detail-header {
+            padding: 24px;
+            border-bottom: 1px solid #f1f5f9;
+            background: #f8fafc;
+        }
+
+        .detail-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 12px;
+        }
+
+        .detail-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            font-size: 14px;
+        }
+
+        .meta-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .meta-label {
+            color: #64748b;
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .meta-value {
+            color: #1e293b;
+            font-weight: 600;
+        }
+
+        .trace-request-full {
+            background: #f1f5f9;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 16px;
+            font-size: 14px;
+            border-left: 4px solid #3b82f6;
+        }
+
+        .trace-response-full {
+            background: #f0fdf4;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 16px;
+            font-size: 14px;
+            border-left: 4px solid #16a34a;
+            white-space: pre-wrap;
+        }
+
+        .runs-tree {
+            padding: 24px;
+        }
+
+        .tree-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .run-node {
+            margin-bottom: 12px;
+        }
+
+        .run-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 16px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .run-card:hover {
+            border-color: #3b82f6;
+            box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+        }
+
+        .run-card.expanded {
+            border-color: #3b82f6;
+            background: white;
+        }
+
+        .run-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .run-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1e293b;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .run-type-badge {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .type-agent {
+            background: #ddd6fe;
+            color: #7c3aed;
+        }
+
+        .type-think {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        .type-act {
+            background: #dcfce7;
+            color: #16a34a;
+        }
+
+        .type-tool {
+            background: #cffafe;
+            color: #0891b2;
+        }
+
+        .type-llm {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .run-meta {
+            display: flex;
+            gap: 12px;
+            font-size: 12px;
+            color: #64748b;
+        }
+
+        .run-children {
+            margin-left: 24px;
+            margin-top: 12px;
+            border-left: 2px solid #e2e8f0;
+            padding-left: 16px;
+        }
+
+        .run-details {
+            margin-top: 16px;
+            border-top: 1px solid #e2e8f0;
+            padding-top: 16px;
+            display: none;
+        }
+
+        .run-details.expanded {
+            display: block;
+        }
+
+        .detail-section {
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .detail-content {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .json-content {
+            color: #1e293b;
+        }
+
+        .error-content {
+            background: #fef2f2;
+            border-color: #fecaca;
+            color: #dc2626;
+        }
+
+        .timing-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 12px;
+        }
+
+        .timing-item {
+            text-align: center;
+        }
+
+        .timing-label {
+            font-size: 12px;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+
+        .timing-value {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1e293b;
+        }
+
+        .expand-icon {
+            transition: transform 0.2s ease;
+            font-size: 12px;
+            color: #64748b;
+        }
+
+        .expand-icon.expanded {
+            transform: rotate(90deg);
+        }
+
+        .no-traces {
+            text-align: center;
+            padding: 60px 20px;
+            color: #64748b;
+            background: white;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .load-button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            margin-top: 16px;
+        }
+
+        .load-button:hover {
+            background: #2563eb;
+        }
+
+        .toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .toolbar-left {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .filter-select {
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            background: white;
+            font-size: 14px;
+        }
+
+        .search-input {
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 14px;
+            width: 300px;
+        }
+
+        .refresh-button {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .refresh-button:hover {
+            background: #059669;
+        }
+
+        .toolbar-right {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .stats-display {
+            font-size: 14px;
+            color: #64748b;
+            display: flex;
+            gap: 16px;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .file-upload {
+            position: relative;
+            display: inline-block;
+        }
+
+        .file-upload input[type=file] {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .upload-button {
+            background: #6366f1;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .upload-button:hover {
+            background: #4f46e5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 Agent Trace Viewer</h1>
+            <p>Visualize and analyze agent execution traces with detailed run information</p>
+        </div>
+
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <input type="text" class="search-input" id="searchInput" placeholder="Search traces...">
+                <select class="filter-select" id="statusFilter">
+                    <option value="">All Status</option>
+                    <option value="success">Success</option>
+                    <option value="error">Error</option>
+                    <option value="running">Running</option>
+                </select>
+                <select class="filter-select" id="runTypeFilter">
+                    <option value="">All Run Types</option>
+                    <option value="agent">Agent</option>
+                    <option value="think">Think</option>
+                    <option value="act">Act</option>
+                    <option value="tool">Tool</option>
+                    <option value="llm">LLM</option>
+                </select>
+            </div>
+            <div class="toolbar-right">
+                <div id="statsDisplay" class="stats-display"></div>
+                <button class="refresh-button" onclick="loadTraces()">🔄 Refresh</button>
+            </div>
+        </div>
+
+        <div id="traceList" class="trace-list">
+            <div class="no-traces">
+                <h3>No traces found</h3>
+                <p>Load trace files to begin analysis</p>
+                <button class="load-button" onclick="loadTraces()">Load Traces</button>
+            </div>
+        </div>
+
+        <div id="traceDetail" class="trace-detail">
+            <!-- Trace details will be populated here -->
+        </div>
+    </div>
+
+    <script>
+        let traces = [];
+        let filteredTraces = [];
+
+        async function loadTraces() {
+            try {
+                // Try to load from API first
+                const response = await fetch('/api/traces/all');
+                const data = await response.json();
+                
+                if (data.success) {
+                    traces = data.traces || [];
+                    filteredTraces = [...traces];
+                    renderTraceList();
+                    updateStats();
+                } else {
+                    throw new Error(data.error || 'Failed to load traces');
+                }
+            } catch (error) {
+                console.error('Failed to load traces from API:', error);
+                // Try to load sample data or show error
+                try {
+                    const response = await fetch('./workdir/traces/web_search_traces.json');
+                    const data = await response.json();
+                    traces = data.traces || [];
+                    filteredTraces = [...traces];
+                    renderTraceList();
+                } catch (fallbackError) {
+                    console.error('Failed to load sample traces:', fallbackError);
+                    loadSampleTraces();
+                }
+            }
+        }
+
+        function loadSampleTraces() {
+            // Sample trace data based on the structure we analyzed
+            traces = [{
+                id: "ae26bb48-3f1d-458f-8c3b-3ced36c3fed4",
+                name: "web-searcher_execution",
+                start_time: "2025-09-23 08:23:01.776002+00:00",
+                end_time: "2025-09-23 08:23:44.042067+00:00",
+                request: "查找 OpenAI 最新的产品发布，并给出链接。",
+                response: "基于搜索结果，我为您整理了 OpenAI 最新的产品发布信息...",
+                status: "success",
+                runs: [
+                    {
+                        id: "b48cb769-d96b-407f-ba5e-c419e456b048",
+                        name: "think_step_1",
+                        run_type: "think",
+                        status: "success",
+                        start_time: "2025-09-23 08:23:01.776289+00:00",
+                        end_time: "2025-09-23 08:23:08.055842+00:00",
+                        parent_run_id: "0418b1bb-fcd4-4c1a-80ec-beb702bf7155",
+                        inputs: {
+                            memory_state: {
+                                total_messages: 1,
+                                message_types: { user: 1 }
+                            }
+                        },
+                        outputs: {
+                            should_act: true,
+                            decision: "proceed_to_action"
+                        },
+                        latency_ms: 6279.553
+                    },
+                    {
+                        id: "0418b1bb-fcd4-4c1a-80ec-beb702bf7155",
+                        name: "step_1",
+                        run_type: "agent",
+                        status: "success",
+                        start_time: "2025-09-23 08:23:01.776289+00:00",
+                        end_time: "2025-09-23 08:23:44.041+00:00",
+                        parent_run_id: null,
+                        inputs: {
+                            step_number: 1,
+                            max_steps: 30,
+                            agent_state: "AgentState.RUNNING"
+                        },
+                        outputs: {
+                            result: "完成了OpenAI产品搜索"
+                        },
+                        latency_ms: 42264.711
+                    },
+                    {
+                        id: "tool-call-1",
+                        name: "web_search",
+                        run_type: "tool",
+                        status: "success",
+                        start_time: "2025-09-23 08:23:08.100+00:00",
+                        end_time: "2025-09-23 08:23:12.500+00:00",
+                        parent_run_id: "b48cb769-d96b-407f-ba5e-c419e456b048",
+                        inputs: {
+                            query: "OpenAI 最新产品发布 2024",
+                            max_results: 5
+                        },
+                        outputs: {
+                            results: [
+                                { title: "GPT-5 发布", url: "https://openai.com/gpt-5" },
+                                { title: "OpenAI o3", url: "https://openai.com/o3" }
+                            ]
+                        },
+                        latency_ms: 4400
+                    }
+                ]
+            }];
+            filteredTraces = [...traces];
+            renderTraceList();
+        }
+
+        function renderTraceList() {
+            const container = document.getElementById('traceList');
+            
+            if (filteredTraces.length === 0) {
+                container.innerHTML = `
+                    <div class="no-traces">
+                        <h3>No traces found</h3>
+                        <p>Load trace files to begin analysis</p>
+                        <button class="load-button" onclick="loadTraces()">Load Traces</button>
+                    </div>
+                `;
+                return;
+            }
+
+            const html = filteredTraces.map(trace => {
+                const duration = trace.end_time && trace.start_time ? 
+                    Math.round((new Date(trace.end_time) - new Date(trace.start_time)) / 1000 * 100) / 100 : 0;
+                
+                return `
+                    <div class="trace-item" onclick="showTraceDetail('${trace.id}')">
+                        <div class="trace-info">
+                            <div class="trace-title">${trace.name}</div>
+                            <div class="trace-meta">
+                                <span>📅 ${formatDate(trace.start_time)}</span>
+                                <span>⏱️ ${duration}s</span>
+                                <span>🔄 ${trace.runs?.length || 0} runs</span>
+                            </div>
+                            ${trace.request ? `
+                                <div class="trace-request">${trace.request}</div>
+                            ` : ''}
+                        </div>
+                        <div class="trace-stats">
+                            <div class="stat-badge stat-runs">${trace.runs?.length || 0} runs</div>
+                            <div class="stat-badge stat-duration">${duration}s</div>
+                            <div class="stat-status status-${trace.status}">${trace.status}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = html;
+        }
+
+        function showTraceDetail(traceId) {
+            const trace = traces.find(t => t.id === traceId);
+            if (!trace) return;
+
+            const container = document.getElementById('traceDetail');
+            const duration = trace.end_time && trace.start_time ? 
+                Math.round((new Date(trace.end_time) - new Date(trace.start_time)) / 1000 * 100) / 100 : 0;
+
+            container.innerHTML = `
+                <div class="detail-header">
+                    <div class="detail-title">${trace.name}</div>
+                    <div class="detail-meta">
+                        <div class="meta-item">
+                            <div class="meta-label">Status</div>
+                            <div class="meta-value">
+                                <span class="stat-status status-${trace.status}">${trace.status}</span>
+                            </div>
+                        </div>
+                        <div class="meta-item">
+                            <div class="meta-label">Duration</div>
+                            <div class="meta-value">${duration}s</div>
+                        </div>
+                        <div class="meta-item">
+                            <div class="meta-label">Runs</div>
+                            <div class="meta-value">${trace.runs?.length || 0}</div>
+                        </div>
+                        <div class="meta-item">
+                            <div class="meta-label">Start Time</div>
+                            <div class="meta-value">${formatDate(trace.start_time)}</div>
+                        </div>
+                    </div>
+                    ${trace.request ? `
+                        <div class="trace-request-full">
+                            <strong>Request:</strong><br>
+                            ${trace.request}
+                        </div>
+                    ` : ''}
+                    ${trace.response ? `
+                        <div class="trace-response-full">
+                            <strong>Response:</strong><br>
+                            ${trace.response}
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="runs-tree">
+                    <div class="tree-title">
+                        🌳 Execution Tree
+                    </div>
+                    ${renderRunsTree(trace.runs || [])}
+                </div>
+            `;
+
+            container.classList.add('active');
+            container.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function renderRunsTree(runs) {
+            const rootRuns = runs.filter(run => !run.parent_run_id);
+            return rootRuns.map(run => renderRunNode(run, runs)).join('');
+        }
+
+        function renderRunNode(run, allRuns, level = 0) {
+            const children = allRuns.filter(r => r.parent_run_id === run.id);
+            const duration = run.end_time && run.start_time ? 
+                Math.round((new Date(run.end_time) - new Date(run.start_time)) / 1000 * 100) / 100 : 0;
+
+            return `
+                <div class="run-node" style="margin-left: ${level * 20}px">
+                    <div class="run-card" onclick="toggleRunDetails('${run.id}')">
+                        <div class="run-header">
+                            <div class="run-title">
+                                <span class="expand-icon" id="icon-${run.id}">▶</span>
+                                ${run.name}
+                                <span class="run-type-badge type-${run.run_type}">${run.run_type}</span>
+                            </div>
+                            <div class="run-meta">
+                                <span class="stat-status status-${run.status}">${run.status}</span>
+                                <span>⏱️ ${duration}s</span>
+                            </div>
+                        </div>
+                        <div class="run-details" id="details-${run.id}">
+                            ${renderRunDetails(run)}
+                        </div>
+                    </div>
+                    ${children.length > 0 ? `
+                        <div class="run-children">
+                            ${children.map(child => renderRunNode(child, allRuns, level + 1)).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        function renderRunDetails(run) {
+            const sections = [];
+
+            // Timing information
+            if (run.start_time || run.end_time || run.latency_ms) {
+                sections.push(`
+                    <div class="detail-section">
+                        <div class="section-title">⏱️ Timing</div>
+                        <div class="timing-grid">
+                            ${run.start_time ? `
+                                <div class="timing-item">
+                                    <div class="timing-label">Start Time</div>
+                                    <div class="timing-value">${formatTime(run.start_time)}</div>
+                                </div>
+                            ` : ''}
+                            ${run.end_time ? `
+                                <div class="timing-item">
+                                    <div class="timing-label">End Time</div>
+                                    <div class="timing-value">${formatTime(run.end_time)}</div>
+                                </div>
+                            ` : ''}
+                            ${run.latency_ms ? `
+                                <div class="timing-item">
+                                    <div class="timing-label">Duration</div>
+                                    <div class="timing-value">${run.latency_ms}ms</div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `);
+            }
+
+            // Inputs
+            if (run.inputs && Object.keys(run.inputs).length > 0) {
+                sections.push(`
+                    <div class="detail-section">
+                        <div class="section-title">📥 Inputs</div>
+                        <div class="detail-content json-content">${JSON.stringify(run.inputs, null, 2)}</div>
+                    </div>
+                `);
+            }
+
+            // Outputs
+            if (run.outputs && Object.keys(run.outputs).length > 0) {
+                sections.push(`
+                    <div class="detail-section">
+                        <div class="section-title">📤 Outputs</div>
+                        <div class="detail-content json-content">${JSON.stringify(run.outputs, null, 2)}</div>
+                    </div>
+                `);
+            }
+
+            // Error information
+            if (run.error) {
+                sections.push(`
+                    <div class="detail-section">
+                        <div class="section-title">❌ Error</div>
+                        <div class="detail-content error-content">${run.error}</div>
+                        ${run.stacktrace ? `
+                            <div class="detail-content error-content" style="margin-top: 8px;">
+                                <strong>Stacktrace:</strong><br>
+                                ${run.stacktrace}
+                            </div>
+                        ` : ''}
+                    </div>
+                `);
+            }
+
+            // Token usage (for LLM runs)
+            if (run.token_usage) {
+                sections.push(`
+                    <div class="detail-section">
+                        <div class="section-title">🎯 Token Usage</div>
+                        <div class="detail-content json-content">${JSON.stringify(run.token_usage, null, 2)}</div>
+                    </div>
+                `);
+            }
+
+            // Metadata
+            if (run.metadata && Object.keys(run.metadata).length > 0) {
+                sections.push(`
+                    <div class="detail-section">
+                        <div class="section-title">📋 Metadata</div>
+                        <div class="detail-content json-content">${JSON.stringify(run.metadata, null, 2)}</div>
+                    </div>
+                `);
+            }
+
+            return sections.join('');
+        }
+
+        function toggleRunDetails(runId) {
+            const details = document.getElementById(`details-${runId}`);
+            const icon = document.getElementById(`icon-${runId}`);
+            const card = details.closest('.run-card');
+
+            if (details.classList.contains('expanded')) {
+                details.classList.remove('expanded');
+                icon.classList.remove('expanded');
+                card.classList.remove('expanded');
+            } else {
+                details.classList.add('expanded');
+                icon.classList.add('expanded');
+                card.classList.add('expanded');
+            }
+        }
+
+        function formatDate(dateString) {
+            if (!dateString) return '';
+            return new Date(dateString).toLocaleString();
+        }
+
+        function formatTime(dateString) {
+            if (!dateString) return '';
+            return new Date(dateString).toLocaleTimeString();
+        }
+
+        async function updateStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                if (data.success) {
+                    const stats = data.stats;
+                    const statsDisplay = document.getElementById('statsDisplay');
+                    statsDisplay.innerHTML = `
+                        <div class="stat-item">📊 ${stats.total_traces} traces</div>
+                        <div class="stat-item">⚡ ${stats.total_runs} runs</div>
+                        <div class="stat-item">❌ ${stats.error_rate}% errors</div>
+                        <div class="stat-item">⏱️ ${stats.avg_duration_ms}ms avg</div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        function applyFilters() {
+            const searchQuery = document.getElementById('searchInput').value.toLowerCase();
+            const statusFilter = document.getElementById('statusFilter').value;
+            const runTypeFilter = document.getElementById('runTypeFilter').value;
+
+            filteredTraces = traces.filter(trace => {
+                // Text search
+                if (searchQuery) {
+                    const searchText = [
+                        trace.name || '',
+                        trace.request || '',
+                        trace.response || ''
+                    ].join(' ').toLowerCase();
+                    
+                    if (!searchText.includes(searchQuery)) {
+                        return false;
+                    }
+                }
+
+                // Status filter
+                if (statusFilter && trace.status !== statusFilter) {
+                    return false;
+                }
+
+                // Run type filter
+                if (runTypeFilter) {
+                    const hasRunType = (trace.runs || []).some(run => 
+                        run.run_type === runTypeFilter
+                    );
+                    if (!hasRunType) {
+                        return false;
+                    }
+                }
+
+                return true;
+            });
+
+            renderTraceList();
+        }
+
+        // Search and filter functionality
+        document.getElementById('searchInput').addEventListener('input', applyFilters);
+        document.getElementById('statusFilter').addEventListener('change', applyFilters);
+        document.getElementById('runTypeFilter').addEventListener('change', applyFilters);
+
+        // Load traces on page load
+        window.addEventListener('load', function() {
+            loadTraces();
+        });
+    </script>
+</body>
+</html>

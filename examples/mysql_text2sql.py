@@ -358,7 +358,7 @@ async def main() -> None:
             "Call mysql_schema for structure, mysql_query for small exploratory checks, "
             "and mysql_validate_sql to finalize the SQL answer without retrieving large result sets."
         ),
-        max_steps=8,
+        max_steps=15,
         enable_tracing=True,
         trace_metadata=metadata
     )
@@ -399,8 +399,11 @@ async def save_traces_to_json(filename: str, question: str) -> None:
     # Export traces to JSON
     json_data = await exporter.export_traces_to_json()
     
+    if not os.path.isdir("./workdir/traces"):
+        os.makedirs("./workdir/traces")
+
     # Save to file
-    with open(filename, 'w', encoding='utf-8') as f:
+    with open(f"./workdir/traces/{filename}", 'w', encoding='utf-8') as f:
         f.write(json_data)
     
     # Get statistics
@@ -415,24 +418,11 @@ async def save_traces_to_json(filename: str, question: str) -> None:
     # Also save a summary report
     summary_filename = filename.replace('.json', '_summary.md')
     summary = await exporter.export_trace_summary()
-    with open(summary_filename, 'w', encoding='utf-8') as f:
+    with open(f"./workdir/traces/{summary_filename}", 'w', encoding='utf-8') as f:
         f.write(f"# MySQL Text-to-SQL Trace Summary\n\n")
         f.write(f"**Question:** {question}\n\n")
         f.write(summary)
-    print(f"📋 Summary report saved to {summary_filename}")
-    
-    # Save detailed tree view for the latest trace if available
-    traces = await query_engine.query_traces()
-    if traces.results:
-        latest_trace = traces.results[0]
-        tree_filename = filename.replace('.json', '_tree.txt')
-        tree = exporter.export_trace_tree(latest_trace)
-        with open(tree_filename, 'w', encoding='utf-8') as f:
-            f.write(f"MySQL Text-to-SQL Execution Tree\n")
-            f.write(f"Question: {question}\n")
-            f.write("=" * 50 + "\n\n")
-            f.write(tree)
-        print(f"🌳 Execution tree saved to {tree_filename}")
+    print(f"📋 Summary report saved to ./workdir/traces/{summary_filename}")
 
 
 if __name__ == "__main__":

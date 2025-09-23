@@ -180,8 +180,11 @@ async def save_traces_to_json(filename: str) -> None:
     # Export traces to JSON
     json_data = await exporter.export_traces_to_json()
     
+    if not os.path.isdir("./workdir/traces"):
+        os.makedirs("./workdir/traces")
+
     # Save to file
-    with open(filename, 'w', encoding='utf-8') as f:
+    with open(f"./workdir/traces/{filename}", 'w', encoding='utf-8') as f:
         f.write(json_data)
     
     # Get statistics
@@ -196,9 +199,9 @@ async def save_traces_to_json(filename: str) -> None:
     # Also save a summary report
     summary_filename = filename.replace('.json', '_summary.md')
     summary = await exporter.export_trace_summary()
-    with open(summary_filename, 'w', encoding='utf-8') as f:
+    with open(f"./workdir/traces/{summary_filename}", 'w', encoding='utf-8') as f:
         f.write(summary)
-    print(f"📋 Summary report saved to {summary_filename}")
+    print(f"📋 Summary report saved to ./workdir/traces/{summary_filename}")
 
 if __name__ == "__main__":
     asyncio.run(main())

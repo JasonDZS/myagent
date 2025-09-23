@@ -17,6 +17,8 @@ class RunType(str, Enum):
     """Types of runs that can be tracked."""
     
     AGENT = "agent"              # Agent execution
+    THINK = "think"              # Agent thinking process
+    ACT = "act"                  # Agent action execution
     TOOL = "tool"                # Tool call
     LLM = "llm"                  # Language model call
     RETRIEVAL = "retrieval"      # Document retrieval
