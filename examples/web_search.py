@@ -1,13 +1,21 @@
-"""Serper web search example for myagent."""
+"""Serper web search example for myagent with trace recording."""
 import asyncio
 import json
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from myagent import create_react_agent
-from myagent.tool.base_tool import BaseTool
+from myagent.tool.base_tool import BaseTool, ToolResult
+from myagent.trace import (
+    TraceManager,
+    TraceQueryEngine,
+    TraceExporter,
+    TraceMetadata,
+    get_trace_manager
+)
 
 
 class SerperSearchTool(BaseTool):
@@ -41,7 +49,7 @@ class SerperSearchTool(BaseTool):
         query: str,
         max_results: int = 3,
         region: str = "us",
-    ) -> str:
+    ) -> ToolResult:
         snippets: List[str] = []
 
         def _split_region(value: str | None) -> Tuple[str | None, str | None]:
@@ -120,21 +128,77 @@ class SerperSearchTool(BaseTool):
                 if len(snippets) >= max_results:
                     break
         except Exception as exc:  # pragma: no cover - network variability
-            return f"Search failed: {exc}"
+            return ToolResult(error=f"Search failed: {exc}")
 
-        return "\n".join(snippets) if snippets else "No live web results found."
+        result_text = "\n".join(snippets) if snippets else "No live web results found."
+        return ToolResult(
+            output=result_text,
+            system=f"Found {len(snippets)} search results for query: '{query}'"
+        )
 
 
 async def main() -> None:
+    # Setup trace manager with metadata
+    metadata = TraceMetadata(
+        user_id="web_search_user",
+        session_id=f"web_search_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        tags=["web_search", "serper", "openai_research"],
+        environment="example",
+        custom_fields={
+            "example_type": "web_search",
+            "search_engine": "serper"
+        }
+    )
+    
+    # Create agent with tracing enabled
     agent = create_react_agent(
         name="web-searcher",
         tools=[SerperSearchTool()],
         system_prompt="You research user questions and call web_search for up-to-date context.",
         next_step_prompt="Use web_search when you need fresh information before answering.",
+        enable_tracing=True,
+        trace_metadata=metadata
     )
 
+    print("🔍 Starting web search with trace recording...")
     summary = await agent.run("查找 OpenAI 最新的产品发布，并给出链接。")
+    print("\n✅ Agent execution completed:")
     print(summary)
+    
+    # Save trace data to JSON
+    await save_traces_to_json("web_search_traces.json")
+
+
+async def save_traces_to_json(filename: str) -> None:
+    """Save all traces to a JSON file."""
+    print(f"\n💾 Saving trace data to {filename}...")
+    
+    trace_manager = get_trace_manager()
+    query_engine = TraceQueryEngine(trace_manager.storage)
+    exporter = TraceExporter(query_engine)
+    
+    # Export traces to JSON
+    json_data = await exporter.export_traces_to_json()
+    
+    # Save to file
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(json_data)
+    
+    # Get statistics
+    stats = await query_engine.get_trace_statistics()
+    
+    print(f"✅ Saved trace data to {filename}")
+    print(f"📊 Trace Statistics:")
+    print(f"  - Total traces: {stats['total_traces']}")
+    print(f"  - Average duration: {stats['avg_duration_ms']:.2f}ms")
+    print(f"  - Error rate: {stats['error_rate']:.2%}")
+    
+    # Also save a summary report
+    summary_filename = filename.replace('.json', '_summary.md')
+    summary = await exporter.export_trace_summary()
+    with open(summary_filename, 'w', encoding='utf-8') as f:
+        f.write(summary)
+    print(f"📋 Summary report saved to {summary_filename}")
 
 if __name__ == "__main__":
     asyncio.run(main())

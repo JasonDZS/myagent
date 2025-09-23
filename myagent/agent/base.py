@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 from ..llm import LLM
 from ..logger import logger
 from ..schema import ROLE_TYPE, AgentState, Memory, Message, Role
+from ..trace import trace, run, RunType, TraceMetadata, get_trace_manager
+from ..trace.decorators import trace_agent_step
 
 
 class BaseAgent(BaseModel, ABC):
@@ -43,6 +45,10 @@ class BaseAgent(BaseModel, ABC):
     final_response: Optional[str] = Field(
         None, description="Final response after execution"
     )
+    
+    # Tracing
+    enable_tracing: bool = Field(default=True, description="Enable execution tracing")
+    trace_metadata: Optional[TraceMetadata] = Field(None, description="Custom trace metadata")
 
     class Config:
         arbitrary_types_allowed = True
@@ -142,6 +148,73 @@ class BaseAgent(BaseModel, ABC):
         if request:
             self.update_memory("user", request)
 
+        # Create trace if tracing is enabled
+        if self.enable_tracing:
+            trace_manager = get_trace_manager()
+            metadata = self.trace_metadata or TraceMetadata()
+            
+            # Add agent info to metadata
+            metadata.custom_fields.update({
+                "agent_name": self.name,
+                "agent_description": self.description,
+                "max_steps": self.max_steps
+            })
+            
+            async with trace_manager.trace(
+                name=f"{self.name}_execution",
+                request=request,
+                metadata=metadata
+            ) as trace_ctx:
+                return await self._run_with_tracing(request, trace_ctx)
+        else:
+            return await self._run_without_tracing(request)
+    
+    async def _run_with_tracing(self, request: Optional[str], trace_ctx) -> str:
+        """Execute the agent with tracing enabled."""
+        results: List[str] = []
+        final_state = None
+        
+        async with self.state_context(AgentState.RUNNING):
+            while (
+                self.current_step < self.max_steps and self.state != AgentState.FINISHED
+            ):
+                self.current_step += 1
+                logger.info(f"Executing step {self.current_step}/{self.max_steps}")
+                
+                # Trace each step
+                step_result = await self._traced_step()
+
+                # Check for stuck state
+                if self.is_stuck():
+                    self.handle_stuck_state()
+
+                results.append(f"Step {self.current_step}: {step_result}")
+
+            # Capture the final state before state_context reverts it
+            final_state = self.state
+            
+            if self.current_step >= self.max_steps:
+                self.current_step = 0
+                final_state = AgentState.IDLE
+                results.append(f"Terminated: Reached max steps ({self.max_steps})")
+        
+        # Set the final state after exiting state_context
+        if final_state:
+            self.state = final_state
+
+        last_llm_response = self._get_last_llm_response()
+        if last_llm_response is not None:
+            self.final_response = last_llm_response
+        else:
+            self.final_response = results[-1] if results else None
+
+        # Update trace with final response
+        trace_ctx.response = self.final_response
+
+        return "\n".join(results) if results else "No steps executed"
+    
+    async def _run_without_tracing(self, request: Optional[str]) -> str:
+        """Execute the agent without tracing (original logic)."""
         results: List[str] = []
         final_state = None
         async with self.state_context(AgentState.RUNNING):
@@ -177,6 +250,26 @@ class BaseAgent(BaseModel, ABC):
             self.final_response = results[-1] if results else None
 
         return "\n".join(results) if results else "No steps executed"
+    
+    async def _traced_step(self) -> str:
+        """Execute a single step with tracing."""
+        trace_manager = get_trace_manager()
+        
+        inputs = {
+            "step_number": self.current_step,
+            "max_steps": self.max_steps,
+            "agent_state": str(self.state),
+            "memory_size": len(self.memory.messages)
+        }
+        
+        async with trace_manager.run(
+            name=f"step_{self.current_step}",
+            run_type=RunType.AGENT,
+            inputs=inputs
+        ) as run_ctx:
+            result = await self.step()
+            run_ctx.outputs["result"] = result
+            return result
 
     @abstractmethod
     async def step(self) -> str:

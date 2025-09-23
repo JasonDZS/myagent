@@ -1,4 +1,4 @@
-"""MySQL Text-to-SQL example for myagent."""
+"""MySQL Text-to-SQL example for myagent with trace recording."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import os
 import re
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from pydantic import Field
@@ -16,7 +17,14 @@ import pymysql
 from pymysql.cursors import DictCursor
 
 from myagent import create_react_agent
-from myagent.tool.base_tool import BaseTool
+from myagent.tool.base_tool import BaseTool, ToolResult
+from myagent.trace import (
+    TraceManager,
+    TraceQueryEngine,
+    TraceExporter,
+    TraceMetadata,
+    get_trace_manager
+)
 
 
 REQUIRED_ENV_VARS = (
@@ -133,7 +141,7 @@ class MySQLSchemaTool(BaseTool):
         },
     }
 
-    async def execute(self, table: Optional[str] = None) -> str:
+    async def execute(self, table: Optional[str] = None) -> ToolResult:
         config = _load_mysql_config()
 
         def _inspect_schema() -> str:
@@ -171,9 +179,13 @@ class MySQLSchemaTool(BaseTool):
                 return "\n".join(lines)
 
         try:
-            return await asyncio.to_thread(_inspect_schema)
+            result = await asyncio.to_thread(_inspect_schema)
+            return ToolResult(
+                output=result,
+                system=f"Schema inspection completed for {'table: ' + table if table else 'all tables'}"
+            )
         except Exception as exc:  # pragma: no cover - depends on external DB
-            return f"Schema inspection failed: {exc}"
+            return ToolResult(error=f"Schema inspection failed: {exc}")
 
 
 class MySQLQueryTool(BaseTool):
@@ -200,18 +212,18 @@ class MySQLQueryTool(BaseTool):
     executed_sql: List[str] = Field(default_factory=list, exclude=True)
     output_char_limit: int = Field(default=2000, exclude=True)
 
-    async def execute(self, sql: str, max_rows: int = 20) -> str:
+    async def execute(self, sql: str, max_rows: int = 20) -> ToolResult:
         stripped_sql = sql.strip().rstrip(";")
         lowered = stripped_sql.lstrip().lower()
         allowed_prefixes = ("select", "show", "describe", "explain", "with")
         if not lowered.startswith(allowed_prefixes):
-            return (
-                "Only read-only queries are permitted. Begin with SELECT, SHOW, DESCRIBE, EXPLAIN, or WITH."
+            return ToolResult(
+                error="Only read-only queries are permitted. Begin with SELECT, SHOW, DESCRIBE, EXPLAIN, or WITH."
             )
 
         read_only_error = _ensure_read_only(stripped_sql)
         if read_only_error:
-            return read_only_error
+            return ToolResult(error=read_only_error)
 
         config = _load_mysql_config()
 
@@ -229,16 +241,25 @@ class MySQLQueryTool(BaseTool):
         try:
             result = await asyncio.to_thread(_run_query)
         except Exception as exc:  # pragma: no cover - depends on external DB
-            return f"Query failed: {exc}"
+            return ToolResult(error=f"Query failed: {exc}")
 
         self.last_sql = stripped_sql
         self.executed_sql.append(stripped_sql)
+        
         if len(result) > self.output_char_limit:
-            return (
+            truncated_result = (
                 result[: self.output_char_limit]
                 + "\n... (truncated output to protect context length)"
             )
-        return result
+            return ToolResult(
+                output=truncated_result,
+                system=f"Query executed successfully with {max_rows} max rows (output truncated)"
+            )
+        
+        return ToolResult(
+            output=result,
+            system=f"Query executed successfully: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}"
+        )
 
 
 class MySQLValidateSQLTool(BaseTool):
@@ -256,16 +277,16 @@ class MySQLValidateSQLTool(BaseTool):
     }
     final_sql: Optional[str] = Field(default=None, exclude=True)
 
-    async def execute(self, sql: str) -> str:
+    async def execute(self, sql: str) -> ToolResult:
         stripped_sql = sql.strip().rstrip(";")
         lowered = stripped_sql.lstrip().lower()
         allowed_prefixes = ("select", "with")
         if not lowered.startswith(allowed_prefixes):
-            return "Final SQL must begin with SELECT or WITH."
+            return ToolResult(error="Final SQL must begin with SELECT or WITH.")
 
         read_only_error = _ensure_read_only(stripped_sql)
         if read_only_error:
-            return read_only_error
+            return ToolResult(error=read_only_error)
 
         config = _load_mysql_config()
 
@@ -281,7 +302,7 @@ class MySQLValidateSQLTool(BaseTool):
         try:
             explain_output = await asyncio.to_thread(_validate)
         except Exception as exc:  # pragma: no cover - depends on external DB
-            return f"Validation failed: {exc}"
+            return ToolResult(error=f"Validation failed: {exc}")
 
         self.final_sql = stripped_sql
         if len(explain_output) > 1200:
@@ -289,11 +310,15 @@ class MySQLValidateSQLTool(BaseTool):
                 explain_output[:1200]
                 + "\n... (EXPLAIN output truncated to protect context length)"
             )
-        return "EXPLAIN succeeded. Execution plan:\n" + explain_output
+        
+        return ToolResult(
+            output="EXPLAIN succeeded. Execution plan:\n" + explain_output,
+            system=f"SQL validation completed for: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}"
+        )
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="MySQL Text-to-SQL agent example")
+    parser = argparse.ArgumentParser(description="MySQL Text-to-SQL agent example with trace recording")
     parser.add_argument(
         "question",
         nargs="?",
@@ -301,6 +326,19 @@ async def main() -> None:
         help="Natural-language question to answer with SQL.",
     )
     args = parser.parse_args()
+
+    # Setup trace manager with metadata
+    metadata = TraceMetadata(
+        user_id="mysql_text2sql_user",
+        session_id=f"mysql_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        tags=["mysql", "text2sql", "database_query"],
+        environment="example",
+        custom_fields={
+            "example_type": "mysql_text2sql",
+            "database_type": "mysql",
+            "question": args.question
+        }
+    )
 
     schema_tool = MySQLSchemaTool()
     query_tool = MySQLQueryTool()
@@ -321,24 +359,80 @@ async def main() -> None:
             "and mysql_validate_sql to finalize the SQL answer without retrieving large result sets."
         ),
         max_steps=8,
+        enable_tracing=True,
+        trace_metadata=metadata
     )
 
+    print(f"🔍 Starting MySQL Text-to-SQL with trace recording...")
+    print(f"Question: {args.question}")
+    
     result = await agent.run(args.question)
+    print("\n✅ Agent execution completed:")
     print(result)
 
     if query_tool.executed_sql:
-        print("\nExploration SQL history:")
+        print("\n📝 Exploration SQL history:")
         for idx, statement in enumerate(query_tool.executed_sql, start=1):
             print(f"- [{idx}] {statement}")
 
     if validate_tool.final_sql:
-        print("\nValidated final SQL:")
+        print("\n✅ Validated final SQL:")
         print(validate_tool.final_sql)
     else:
-        print("\nNo final SQL was validated. Ensure the agent calls mysql_validate_sql once satisfied.")
+        print("\n⚠️ No final SQL was validated. Ensure the agent calls mysql_validate_sql once satisfied.")
 
-    print("Final response:")
+    print("\n📊 Final response:")
     print(agent.final_response)
+    
+    # Save trace data to JSON
+    await save_traces_to_json("mysql_text2sql_traces.json", args.question)
+
+
+async def save_traces_to_json(filename: str, question: str) -> None:
+    """Save all traces to a JSON file."""
+    print(f"\n💾 Saving trace data to {filename}...")
+    
+    trace_manager = get_trace_manager()
+    query_engine = TraceQueryEngine(trace_manager.storage)
+    exporter = TraceExporter(query_engine)
+    
+    # Export traces to JSON
+    json_data = await exporter.export_traces_to_json()
+    
+    # Save to file
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(json_data)
+    
+    # Get statistics
+    stats = await query_engine.get_trace_statistics()
+    
+    print(f"✅ Saved trace data to {filename}")
+    print(f"📊 Trace Statistics:")
+    print(f"  - Total traces: {stats['total_traces']}")
+    print(f"  - Average duration: {stats['avg_duration_ms']:.2f}ms")
+    print(f"  - Error rate: {stats['error_rate']:.2%}")
+    
+    # Also save a summary report
+    summary_filename = filename.replace('.json', '_summary.md')
+    summary = await exporter.export_trace_summary()
+    with open(summary_filename, 'w', encoding='utf-8') as f:
+        f.write(f"# MySQL Text-to-SQL Trace Summary\n\n")
+        f.write(f"**Question:** {question}\n\n")
+        f.write(summary)
+    print(f"📋 Summary report saved to {summary_filename}")
+    
+    # Save detailed tree view for the latest trace if available
+    traces = await query_engine.query_traces()
+    if traces.results:
+        latest_trace = traces.results[0]
+        tree_filename = filename.replace('.json', '_tree.txt')
+        tree = exporter.export_trace_tree(latest_trace)
+        with open(tree_filename, 'w', encoding='utf-8') as f:
+            f.write(f"MySQL Text-to-SQL Execution Tree\n")
+            f.write(f"Question: {question}\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(tree)
+        print(f"🌳 Execution tree saved to {tree_filename}")
 
 
 if __name__ == "__main__":

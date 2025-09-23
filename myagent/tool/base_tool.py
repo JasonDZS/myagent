@@ -3,18 +3,64 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from ..trace import get_trace_manager, RunType
+from ..trace.decorators import trace_tool_call
+
 
 class BaseTool(ABC, BaseModel):
     name: str
     description: str
     parameters: Optional[dict] = None
+    enable_tracing: bool = Field(default=True, description="Enable execution tracing")
 
     class Config:
         arbitrary_types_allowed = True
 
     async def __call__(self, **kwargs) -> Any:
         """Execute the tool with given parameters."""
-        return await self.execute(**kwargs)
+        if self.enable_tracing:
+            return await self._traced_execute(**kwargs)
+        else:
+            return await self.execute(**kwargs)
+    
+    async def _traced_execute(self, **kwargs) -> Any:
+        """Execute the tool with tracing enabled."""
+        trace_manager = get_trace_manager()
+        
+        # Prepare inputs for tracing
+        inputs = dict(kwargs)
+        
+        # Prepare metadata
+        metadata = {
+            "tool_description": self.description,
+            "tool_parameters": self.parameters
+        }
+        
+        async with trace_manager.run(
+            name=self.name,
+            run_type=RunType.TOOL,
+            inputs=inputs,
+            **metadata
+        ) as run_ctx:
+            try:
+                result = await self.execute(**kwargs)
+                
+                # Capture tool result
+                if result is not None:
+                    if hasattr(result, 'output'):
+                        # Handle ToolResult objects
+                        run_ctx.outputs["output"] = str(result.output)
+                        if hasattr(result, 'error') and result.error:
+                            run_ctx.outputs["error"] = result.error
+                            run_ctx.metadata["has_error"] = True
+                    else:
+                        run_ctx.outputs["result"] = str(result)
+                
+                return result
+            
+            except Exception as e:
+                run_ctx.fail(str(e), type(e).__name__)
+                raise
 
     @abstractmethod
     async def execute(self, **kwargs) -> Any:
