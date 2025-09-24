@@ -1,0 +1,33 @@
+# WebSocket Trace Server Requirements
+# Core web framework
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+
+# Database connectivity
+pymysql>=1.1.0
+
+# Data validation and serialization
+pydantic>=2.5.0
+
+# Date and time handling
+python-dateutil>=2.8.2
+
+# Environment variable loading
+python-dotenv>=1.0.0
+
+# HTTP client (for health checks)
+httpx>=0.25.0
+
+# Optional: Rich output formatting (for enhanced CLI output)
+rich>=13.0.0
+
+# MyAgent framework dependencies (should already be installed)
+# openai>=1.0.0
+# tiktoken>=0.7.0
+# tenacity>=8.2.0
+# loguru>=0.7.0
+
+# Development dependencies (optional)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
