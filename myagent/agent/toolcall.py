@@ -37,9 +37,19 @@ class ToolCallAgent(ReActAgent):
 
     async def think(self) -> bool:
         """Process current state and decide next actions using tools"""
-        if self.next_step_prompt:
-            user_msg = Message.user_message(self.next_step_prompt)
-            self.messages += [user_msg]
+        # Check if we need to add next_step_prompt to the last user message
+        if self.next_step_prompt and self.messages:
+            last_msg = self.messages[-1]
+            # If the last message is a user message, append next_step_prompt to it
+            if last_msg.role == "user" and not any(self.next_step_prompt in msg.content for msg in self.messages if msg.role == "user"):
+                # Update the last user message content
+                combined_content = f"Question: {last_msg.content}\n\nGuide: {self.next_step_prompt}"
+                # Replace the last message with updated content
+                self.messages[-1] = Message.user_message(combined_content)
+            elif last_msg.role != "user":
+                # If last message is not user message, add as separate message
+                user_msg = Message.user_message(self.next_step_prompt)
+                self.messages += [user_msg]
 
         try:
             # Get response with tool options

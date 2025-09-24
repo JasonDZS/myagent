@@ -283,33 +283,42 @@ class BaseAgent(BaseModel, ABC):
         """Execute a ReAct step with detailed think/act tracing."""
         trace_manager = get_trace_manager()
         
-        # Trace thinking process
-        think_inputs = {
-            "memory_state": self._get_memory_state_summary(),
-            "current_context": self._get_current_context()
-        }
-        
         async with trace_manager.run(
             name=f"think_step_{self.current_step}",
             run_type=RunType.THINK,
-            inputs=think_inputs,
+            inputs={},  # Will be updated after think() execution
             parent_run_id=parent_run_ctx.id
         ) as think_run:
             should_act = await self.think()
-            think_run.outputs.update({
-                "should_act": should_act,
-                "decision": "proceed_to_action" if should_act else "thinking_complete",
-                "memory_after_think": self._get_memory_state_summary()
-            })
             
+            # Get messages after think() execution for complete trace
+            user_msg_after = self._get_last_user_message()
+            assistant_msg = self._get_last_assistant_message()
+            
+            # Update inputs with the final user message (after potential merging in think())
+            think_run.inputs.update(user_msg_after.to_dict() if user_msg_after else {})
+            
+            # Update outputs with assistant message
+            think_run.outputs.update(assistant_msg.to_dict() if assistant_msg else {})
+
             if not should_act:
                 parent_run_ctx.outputs["result"] = "Thinking complete - no action needed"
                 return "Thinking complete - no action needed"
         
-        # Trace action process
+        # Trace action process - include tool decisions from think step
+        tools_to_execute = []
+        if assistant_msg and assistant_msg.tool_calls:
+            tools_to_execute = [
+                {
+                    "tool_name": call.function.name,
+                    "tool_id": call.id
+                }
+                for call in assistant_msg.tool_calls
+            ]
+        
         act_inputs = {
-            "memory_state": self._get_memory_state_summary(),
-            "decision_context": "proceeding_with_action"
+            "tools_to_execute": tools_to_execute,
+            "step_context": f"step_{self.current_step}"
         }
         
         async with trace_manager.run(
@@ -320,8 +329,7 @@ class BaseAgent(BaseModel, ABC):
         ) as act_run:
             result = await self.act()
             act_run.outputs.update({
-                "action_result": result,
-                "memory_after_act": self._get_memory_state_summary()
+                "action_result": result
             })
             
             parent_run_ctx.outputs["result"] = result
@@ -477,6 +485,20 @@ class BaseAgent(BaseModel, ABC):
         for message in reversed(self.memory.messages):
             if message.role == Role.ASSISTANT.value and message.content:
                 return message.content
+        return None
+
+    def _get_last_user_message(self) -> Optional[Message]:
+        """Return the most recent user message from memory."""
+        for message in reversed(self.memory.messages):
+            if message.role == Role.USER.value:
+                return message
+        return None
+
+    def _get_last_assistant_message(self) -> Optional[Message]:
+        """Return the most recent assistant message from memory."""
+        for message in reversed(self.memory.messages):
+            if message.role == Role.ASSISTANT.value:
+                return message
         return None
 
     @property
