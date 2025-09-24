@@ -41,7 +41,7 @@ class BaseAgent(BaseModel, ABC):
     max_steps: int = Field(default=10, description="Maximum steps before termination")
     current_step: int = Field(default=0, description="Current step in execution")
 
-    duplicate_threshold: int = 2
+    duplicate_threshold: int = 1
     final_response: Optional[str] = Field(
         None, description="Final response after execution"
     )
@@ -431,11 +431,25 @@ class BaseAgent(BaseModel, ABC):
         """
 
     def handle_stuck_state(self):
-        """Handle stuck state by adding a prompt to change strategy"""
-        stuck_prompt = "\
-        Observed duplicate responses. Consider new strategies and avoid repeating ineffective paths already attempted."
-        self.next_step_prompt = f"{stuck_prompt}\n{self.next_step_prompt}"
-        logger.warning(f"Agent detected stuck state. Added prompt: {stuck_prompt}")
+        """Handle stuck state with stronger intervention"""
+        stuck_prompt = (
+            "IMPORTANT: You are repeating identical responses. "
+            "Change your approach completely. Consider: "
+            "1) Different tool usage, 2) Different analysis angle, "
+            "3) Skip to final answer if enough info available."
+        )
+        
+        # Stronger intervention - replace instead of append to ensure it's seen
+        original_prompt = self.next_step_prompt or ""
+        self.next_step_prompt = f"{stuck_prompt}\n\nOriginal guide: {original_prompt}" if original_prompt else stuck_prompt
+        
+        # Also add a system message to memory for immediate impact
+        system_msg = Message.system_message(
+            "System: Detected repetitive responses. Please change your approach immediately."
+        )
+        self.memory.add_message(system_msg)
+        
+        logger.warning(f"Agent {self.name} detected stuck state. Strong intervention applied.")
 
     def is_stuck(self) -> bool:
         """Check if the agent is stuck in a loop by detecting duplicate content"""
