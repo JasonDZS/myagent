@@ -280,7 +280,7 @@ class BaseAgent(BaseModel, ABC):
             return result
     
     async def _traced_react_step(self, parent_run_ctx) -> str:
-        """Execute a ReAct step with detailed think/act tracing."""
+        """Execute a ReAct step with Think → Tools structure (no Act layer)."""
         trace_manager = get_trace_manager()
         
         async with trace_manager.run(
@@ -305,35 +305,10 @@ class BaseAgent(BaseModel, ABC):
                 parent_run_ctx.outputs["result"] = "Thinking complete - no action needed"
                 return "Thinking complete - no action needed"
         
-        # Trace action process - include tool decisions from think step
-        tools_to_execute = []
-        if assistant_msg and assistant_msg.tool_calls:
-            tools_to_execute = [
-                {
-                    "tool_name": call.function.name,
-                    "tool_id": call.id
-                }
-                for call in assistant_msg.tool_calls
-            ]
-        
-        act_inputs = {
-            "tools_to_execute": tools_to_execute,
-            "step_context": f"step_{self.current_step}"
-        }
-        
-        async with trace_manager.run(
-            name=f"act_step_{self.current_step}",
-            run_type=RunType.ACT,
-            inputs=act_inputs,
-            parent_run_id=parent_run_ctx.id
-        ) as act_run:
-            result = await self.act()
-            act_run.outputs.update({
-                "action_result": result
-            })
-            
-            parent_run_ctx.outputs["result"] = result
-            return result
+        # Execute actions directly - Tool traces will be recorded as direct children of the step
+        result = await self.act()
+        parent_run_ctx.outputs["result"] = result
+        return result
     
     def _get_recent_messages_summary(self, limit: int = None) -> list:
         """Get a summary of messages for tracing.

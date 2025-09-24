@@ -265,7 +265,7 @@ def search_traces():
 
 @app.route("/api/stats")
 def get_stats():
-    """Get statistics about all traces."""
+    """Get statistics about all traces with flattened structure insights."""
     try:
         # Get all traces
         response = get_all_traces()
@@ -286,11 +286,20 @@ def get_stats():
             "avg_duration_ms": 0,
             "total_runs": 0,
             "error_rate": 0,
-            "recent_activity": []
+            "recent_activity": [],
+            # New flattened structure insights
+            "structure_analysis": {
+                "flattened_traces": 0,
+                "legacy_traces": 0,
+                "think_to_tool_ratio": 0,
+                "avg_tools_per_trace": 0
+            }
         }
         
         total_duration = 0
         duration_count = 0
+        think_count = 0
+        tool_count = 0
         
         for trace in traces:
             # Status breakdown
@@ -308,13 +317,33 @@ def get_stats():
                 except:
                     pass
             
-            # Run analysis
+            # Run analysis with flattened structure detection
             runs = trace.get("runs", [])
             stats["total_runs"] += len(runs)
+            
+            has_act_runs = False
+            trace_think_count = 0
+            trace_tool_count = 0
             
             for run in runs:
                 run_type = run.get("run_type", "unknown")
                 stats["run_type_breakdown"][run_type] = stats["run_type_breakdown"].get(run_type, 0) + 1
+                
+                # Track structure type
+                if run_type == "act":
+                    has_act_runs = True
+                elif run_type == "think":
+                    trace_think_count += 1
+                    think_count += 1
+                elif run_type == "tool":
+                    trace_tool_count += 1
+                    tool_count += 1
+            
+            # Classify trace structure
+            if has_act_runs:
+                stats["structure_analysis"]["legacy_traces"] += 1
+            else:
+                stats["structure_analysis"]["flattened_traces"] += 1
         
         # Calculate averages and rates
         if duration_count > 0:
@@ -324,6 +353,12 @@ def get_stats():
             error_count = stats["status_breakdown"].get("error", 0)
             stats["error_rate"] = round((error_count / stats["total_traces"]) * 100, 2)
         
+        # Flattened structure insights
+        if think_count > 0:
+            stats["structure_analysis"]["think_to_tool_ratio"] = round(tool_count / think_count, 2)
+        if stats["total_traces"] > 0:
+            stats["structure_analysis"]["avg_tools_per_trace"] = round(tool_count / stats["total_traces"], 2)
+        
         # Recent activity (last 10 traces)
         stats["recent_activity"] = [
             {
@@ -331,7 +366,8 @@ def get_stats():
                 "name": trace.get("name"),
                 "status": trace.get("status"),
                 "start_time": trace.get("start_time"),
-                "runs_count": len(trace.get("runs", []))
+                "runs_count": len(trace.get("runs", [])),
+                "structure": "flattened" if not any(run.get("run_type") == "act" for run in trace.get("runs", [])) else "legacy"
             }
             for trace in sorted(traces, key=lambda x: x.get("start_time", ""), reverse=True)[:10]
         ]
@@ -339,6 +375,161 @@ def get_stats():
         return jsonify({
             "success": True,
             "stats": stats
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/structure-analysis")
+def analyze_trace_structure():
+    """Analyze trace structure patterns and provide insights on flattened vs legacy structures."""
+    try:
+        # Get all traces
+        response = get_all_traces()
+        if not response.is_json:
+            return response
+            
+        data = response.get_json()
+        if not data.get("success"):
+            return response
+            
+        traces = data["traces"]
+        
+        analysis = {
+            "summary": {
+                "total_traces": len(traces),
+                "flattened_traces": 0,
+                "legacy_traces": 0,
+                "migration_progress": 0  # percentage of flattened traces
+            },
+            "structure_patterns": {
+                "think_only": 0,      # traces with only think runs
+                "think_tool": 0,      # flattened: think + tool
+                "think_act_tool": 0,  # legacy: think + act + tool
+                "other": 0
+            },
+            "performance_comparison": {
+                "flattened": {
+                    "avg_runs_per_trace": 0,
+                    "avg_duration_ms": 0,
+                    "total_traces": 0
+                },
+                "legacy": {
+                    "avg_runs_per_trace": 0,
+                    "avg_duration_ms": 0,
+                    "total_traces": 0
+                }
+            },
+            "examples": {
+                "flattened": [],
+                "legacy": []
+            }
+        }
+        
+        flattened_durations = []
+        legacy_durations = []
+        flattened_run_counts = []
+        legacy_run_counts = []
+        
+        for trace in traces:
+            runs = trace.get("runs", [])
+            run_types = [run.get("run_type", "unknown") for run in runs]
+            
+            has_think = "think" in run_types
+            has_act = "act" in run_types  
+            has_tool = "tool" in run_types
+            
+            # Duration calculation
+            duration_ms = None
+            if trace.get("start_time") and trace.get("end_time"):
+                try:
+                    start = datetime.fromisoformat(trace["start_time"].replace("Z", "+00:00"))
+                    end = datetime.fromisoformat(trace["end_time"].replace("Z", "+00:00"))
+                    duration_ms = (end - start).total_seconds() * 1000
+                except:
+                    pass
+            
+            # Classify structure
+            if has_act:
+                # Legacy structure
+                analysis["summary"]["legacy_traces"] += 1
+                analysis["structure_patterns"]["think_act_tool"] += 1
+                
+                if duration_ms:
+                    legacy_durations.append(duration_ms)
+                legacy_run_counts.append(len(runs))
+                
+                # Add example
+                if len(analysis["examples"]["legacy"]) < 3:
+                    analysis["examples"]["legacy"].append({
+                        "id": trace.get("id"),
+                        "name": trace.get("name"),
+                        "runs_count": len(runs),
+                        "run_types": list(set(run_types)),
+                        "duration_ms": duration_ms
+                    })
+                    
+            else:
+                # Flattened structure
+                analysis["summary"]["flattened_traces"] += 1
+                
+                if has_think and has_tool:
+                    analysis["structure_patterns"]["think_tool"] += 1
+                elif has_think and not has_tool:
+                    analysis["structure_patterns"]["think_only"] += 1
+                else:
+                    analysis["structure_patterns"]["other"] += 1
+                
+                if duration_ms:
+                    flattened_durations.append(duration_ms)
+                flattened_run_counts.append(len(runs))
+                
+                # Add example
+                if len(analysis["examples"]["flattened"]) < 3:
+                    analysis["examples"]["flattened"].append({
+                        "id": trace.get("id"),
+                        "name": trace.get("name"),
+                        "runs_count": len(runs),
+                        "run_types": list(set(run_types)),
+                        "duration_ms": duration_ms
+                    })
+        
+        # Calculate migration progress
+        if analysis["summary"]["total_traces"] > 0:
+            analysis["summary"]["migration_progress"] = round(
+                (analysis["summary"]["flattened_traces"] / analysis["summary"]["total_traces"]) * 100, 1
+            )
+        
+        # Performance comparison
+        if flattened_durations:
+            analysis["performance_comparison"]["flattened"]["avg_duration_ms"] = round(
+                sum(flattened_durations) / len(flattened_durations), 2
+            )
+            analysis["performance_comparison"]["flattened"]["total_traces"] = len(flattened_durations)
+        
+        if legacy_durations:
+            analysis["performance_comparison"]["legacy"]["avg_duration_ms"] = round(
+                sum(legacy_durations) / len(legacy_durations), 2
+            )
+            analysis["performance_comparison"]["legacy"]["total_traces"] = len(legacy_durations)
+        
+        if flattened_run_counts:
+            analysis["performance_comparison"]["flattened"]["avg_runs_per_trace"] = round(
+                sum(flattened_run_counts) / len(flattened_run_counts), 1
+            )
+        
+        if legacy_run_counts:
+            analysis["performance_comparison"]["legacy"]["avg_runs_per_trace"] = round(
+                sum(legacy_run_counts) / len(legacy_run_counts), 1
+            )
+        
+        return jsonify({
+            "success": True,
+            "analysis": analysis
         })
         
     except Exception as e:
@@ -370,7 +561,8 @@ def main():
     print(f"   - GET /api/traces/all - Get all traces")
     print(f"   - GET /api/traces/<filename> - Get specific trace file")
     print(f"   - GET /api/search?q=<query> - Search traces")
-    print(f"   - GET /api/stats - Get trace statistics")
+    print(f"   - GET /api/stats - Get trace statistics (with flattened insights)")
+    print(f"   - GET /api/structure-analysis - Analyze flattened vs legacy structures")
     print()
     
     # Check if traces directory exists
