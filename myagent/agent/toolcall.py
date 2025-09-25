@@ -248,7 +248,7 @@ class ToolCallAgent(ReActAgent):
             self.state = AgentState.FINISHED
 
     @staticmethod
-    def _should_finish_execution(**kwargs) -> bool:
+    def _should_finish_execution(**_kwargs) -> bool:  # pylint: disable=unused-argument
         """Determine if tool execution should finish the agent"""
         return True
 
@@ -259,11 +259,20 @@ class ToolCallAgent(ReActAgent):
     async def _generate_final_summary(self):
         """Generate a final summary of the conversation and task execution"""
         try:
-            # Find the original user question (first user message)
+            # Find the current conversation's user question (last user message before summary prompt)
             original_question = None
-            for msg in self.memory.messages:
-                if msg.role == "user":
-                    original_question = msg.content
+            # Look for the last user message that's not the summary prompt or next step prompt
+            for msg in reversed(self.memory.messages):
+                if (msg.role == "user" and 
+                    SUMMARY_PROMPT not in msg.content and 
+                    self.next_step_prompt != msg.content):
+                    # If the message contains next_step_prompt, extract the original question part
+                    if "Question:" in msg.content and "Guide:" in msg.content:
+                        # Extract the question part from combined content
+                        question_part = msg.content.split("Guide:")[0].replace("Question:", "").strip()
+                        original_question = question_part
+                    else:
+                        original_question = msg.content
                     break
             
             # Create summary prompt including original question

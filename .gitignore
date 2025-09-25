@@ -43,3 +43,4 @@ design.md
 .env
 workdir/
 CLAUDE.md
+llm_response.json
