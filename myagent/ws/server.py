@@ -26,6 +26,7 @@ class AgentWebSocketServer:
         self.sessions: Dict[str, AgentSession] = {}
         self.connections: Dict[str, WebSocketServerProtocol] = {}
         self.running = False
+        self.shutdown_event = asyncio.Event()
         
     async def handle_connection(self, websocket: WebSocketServerProtocol, path: Optional[str] = None):
         """处理新的 WebSocket 连接"""
@@ -108,7 +109,11 @@ class AgentWebSocketServer:
             
             self.sessions[session_id] = session
             
-            logger.info(f"Created session {session_id} for connection {connection_id}")
+            # 计算当前活跃会话数
+            active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
+            total_sessions = len(self.sessions)
+            
+            logger.info(f"Created session {session_id} for connection {connection_id} | Active sessions: {active_sessions}/{total_sessions}")
             
             # 发送会话创建确认
             await self._send_event(websocket, create_event(
@@ -194,7 +199,13 @@ class AgentWebSocketServer:
             self.sessions.pop(session_id, None)
             logger.info(f"Cleaned up session {session_id}")
         
-        logger.info(f"Cleaned up connection {connection_id}")
+        # 显示清理后的会话统计
+        if sessions_to_remove:
+            active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
+            total_sessions = len(self.sessions)
+            logger.info(f"Cleaned up connection {connection_id} | Active sessions: {active_sessions}/{total_sessions}")
+        else:
+            logger.info(f"Cleaned up connection {connection_id}")
     
     async def _send_event(self, websocket: WebSocketServerProtocol, 
                          event: Dict[str, Any]) -> None:
@@ -219,7 +230,7 @@ class AgentWebSocketServer:
             return
             
         self.running = True
-        logger.info(f"🚀 MyAgent WebSocket 服务启动在 ws://{self.host}:{self.port}")
+        logger.info(f"🚀 MyAgent WebSocket 服务启动在 ws://{self.host}:{self.port} | Active sessions: 0/0")
         
         try:
             async with websockets.serve(
@@ -235,9 +246,15 @@ class AgentWebSocketServer:
                 heartbeat_task = asyncio.create_task(self._heartbeat_loop())
                 
                 try:
-                    await asyncio.Future()  # 永远运行
+                    # 等待关闭事件而不是永远运行
+                    await self.shutdown_event.wait()
                 finally:
                     heartbeat_task.cancel()
+                    # 等待心跳任务完全停止
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
                     
         except Exception as e:
             logger.error(f"Server error: {e}")
@@ -263,6 +280,12 @@ class AgentWebSocketServer:
                     if session:
                         await session.close()
                         logger.info(f"Cleaned up inactive session: {session_id}")
+                
+                # 显示心跳清理后的会话统计
+                if invalid_sessions:
+                    active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
+                    total_sessions = len(self.sessions)
+                    logger.info(f"Heartbeat cleanup completed | Active sessions: {active_sessions}/{total_sessions}")
                 
                 # 发送心跳给活跃连接
                 for connection_id, websocket in list(self.connections.items()):
@@ -308,6 +331,9 @@ class AgentWebSocketServer:
         """优雅关闭服务器"""
         logger.info("Shutting down server...")
         
+        # 设置关闭标志
+        self.running = False
+        
         # 关闭所有会话
         for session in list(self.sessions.values()):
             await session.close()
@@ -326,5 +352,6 @@ class AgentWebSocketServer:
             except Exception as e:
                 logger.debug(f"Error closing websocket: {e}")
         
-        self.running = False
+        # 触发关闭事件来停止服务器主循环
+        self.shutdown_event.set()
         logger.info("Server shutdown complete")

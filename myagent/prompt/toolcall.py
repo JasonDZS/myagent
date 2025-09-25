@@ -18,8 +18,7 @@ NEXT_STEP_PROMPT = (
 
 # Summary prompt for final step after special tool execution
 SUMMARY_PROMPT = (
-    "Please provide a comprehensive summary of the entire conversation and task execution. "
-    "Include: 1) The original task/request, 2) Key steps taken and tools used, "
-    "3) Important findings or results, 4) Final outcome. "
-    "Make the summary clear and concise for easy understanding."
+    "Respond with a concise conclusion that directly addresses the user's request. "
+    "Focus on the final answer or recommendation related to the user's question, "
+    "and do not mention intermediate reasoning, steps, or tool usage."
 )

@@ -98,18 +98,28 @@ async def run_server(args):
         port=args.port
     )
     
-    # 设置信号处理器优雅关闭
-    def signal_handler(sig, frame):
-        print("\\n🛑 正在关闭服务器...")
-        asyncio.create_task(server.shutdown())
+    # 设置 asyncio 信号处理器优雅关闭
+    loop = asyncio.get_running_loop()
+    shutdown_requested = False
     
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    def handle_shutdown():
+        nonlocal shutdown_requested
+        if not shutdown_requested:
+            shutdown_requested = True
+            print("\\n🛑 正在关闭服务器...")
+            # 创建关闭任务
+            loop.create_task(server.shutdown())
+    
+    # 使用 asyncio 的信号处理，这在事件循环中工作更好
+    loop.add_signal_handler(signal.SIGINT, handle_shutdown)
+    loop.add_signal_handler(signal.SIGTERM, handle_shutdown)
     
     try:
         await server.start_server()
+        print("🛑 服务器已停止")
+        return 0
     except KeyboardInterrupt:
-        print("\\n🛑 服务器已停止")
+        print("\\n🛑 服务器已停止")  
         return 0
     except Exception as e:
         print(f"❌ 服务器错误: {e}")

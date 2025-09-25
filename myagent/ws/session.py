@@ -35,13 +35,8 @@ class AgentSession:
         
         if original_step:
             async def wrapped_step(*args, **kwargs):
-                # 在每个步骤前发送 thinking 事件
-                await self._send_event(create_event(
-                    AgentEvents.THINKING,
-                    session_id=self.session_id,
-                    content="正在处理...",
-                    metadata={"step": self.step_counter}
-                ))
+                # Set current step counter for agent to use
+                setattr(self.agent, '_current_step', self.step_counter)
                 
                 try:
                     result = await original_step(*args, **kwargs)
@@ -71,15 +66,7 @@ class AgentSession:
         self.step_counter = 0
         
         try:
-            # 发送开始执行事件
-            await self._send_event(create_event(
-                AgentEvents.THINKING,
-                session_id=self.session_id,
-                content="开始处理您的请求...",
-                metadata={"step": 0}
-            ))
-            
-            # 创建执行任务
+            # 创建执行任务 (Agent will send its own thinking events with actual content)
             self.current_task = asyncio.create_task(
                 self._run_agent_with_streaming(user_input)
             )
@@ -106,6 +93,13 @@ class AgentSession:
     async def _run_agent_with_streaming(self, user_input: str) -> None:
         """运行 Agent 并流式推送状态"""
         try:
+            # Reset agent state if it's finished or in error to allow reuse
+            from ..schema import AgentState
+            if self.agent.state in [AgentState.FINISHED, AgentState.ERROR]:
+                logger.info(f"Resetting agent state from {self.agent.state} to IDLE for session {self.session_id}")
+                self.agent.state = AgentState.IDLE
+                self.agent.current_step = 0
+            
             # 监控 Agent 工具调用
             self._wrap_tool_calls()
             
@@ -132,11 +126,12 @@ class AgentSession:
             else:
                 raise AttributeError("Agent has no run or arun method")
                 
-            # 发送最终结果
+            # 发送最终结果 - 使用 agent.final_response 而不是 run() 的返回值
+            final_content = getattr(self.agent, 'final_response', None) or str(result) if result else "执行完成"
             await self._send_event(create_event(
                 AgentEvents.FINAL_ANSWER,
                 session_id=self.session_id,
-                content=str(result) if result else "执行完成"
+                content=final_content
             ))
             
         except Exception as e:
@@ -156,31 +151,19 @@ class AgentSession:
     def _wrap_tool_calls(self):
         """包装工具调用以提供实时反馈"""
         if not hasattr(self.agent, 'available_tools'):
+            logger.debug("Agent has no available_tools attribute")
             return
             
         tools = self.agent.available_tools
-        tool_dict = {}
         
-        if hasattr(tools, 'tools'):
-            # ToolCollection
-            if isinstance(tools.tools, dict):
-                tool_dict = tools.tools
-            elif hasattr(tools.tools, 'items'):
-                tool_dict = dict(tools.tools.items())
-        elif hasattr(tools, '__iter__'):
-            # List of tools
-            try:
-                tool_dict = {tool.name: tool for tool in tools if hasattr(tool, 'name')}
-            except (TypeError, AttributeError):
-                return
-        else:
-            return
+        # Check if it's a ToolCollection and wrap its execute method
+        if hasattr(tools, 'execute') and hasattr(tools, 'tool_map'):
+            original_execute = getattr(tools, 'execute')
+            logger.info(f"Wrapping ToolCollection.execute with {len(tools.tool_map)} tools: {list(tools.tool_map.keys())}")
             
-        for tool_name, tool in tool_dict.items():
-            original_execute = tool.execute
-            
-            async def wrapped_execute(*args, tool=tool, name=tool_name, **kwargs):
+            async def wrapped_collection_execute(*, name: str, tool_input: dict = None):
                 step_id = f"step_{self.step_counter}_{name}"
+                self.step_counter += 1
                 
                 # 发送工具调用开始事件
                 await self._send_event(create_event(
@@ -190,15 +173,22 @@ class AgentSession:
                     content=f"调用工具: {name}",
                     metadata={
                         "tool": name,
-                        "args": kwargs,
+                        "args": tool_input or {},
                         "status": "running"
                     }
                 ))
                 
                 try:
-                    result = await original_execute(*args, **kwargs)
+                    result = await original_execute(name=name, tool_input=tool_input)
                     
                     # 发送工具结果事件
+                    # Determine if the tool execution was successful
+                    is_success = True
+                    if hasattr(result, 'error') and result.error is not None:
+                        is_success = False
+                    elif result.__class__.__name__ == 'ToolFailure':
+                        is_success = False
+                        
                     await self._send_event(create_event(
                         AgentEvents.TOOL_RESULT,
                         session_id=self.session_id,
@@ -206,7 +196,8 @@ class AgentSession:
                         content=str(result.output) if hasattr(result, 'output') else str(result),
                         metadata={
                             "tool": name,
-                            "status": "success"
+                            "status": "success" if is_success else "failed",
+                            "error": str(result.error) if hasattr(result, 'error') and result.error else None
                         }
                     ))
                     
@@ -227,7 +218,11 @@ class AgentSession:
                     ))
                     raise
                     
-            tool.execute = wrapped_execute
+            # Replace the ToolCollection's execute method
+            setattr(tools, 'execute', wrapped_collection_execute)
+            logger.info("Successfully wrapped ToolCollection.execute method")
+        else:
+            logger.warning(f"Unknown tools structure: {type(tools)}, cannot wrap")
     
     async def cancel(self) -> None:
         """取消当前执行"""

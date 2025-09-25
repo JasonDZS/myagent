@@ -191,7 +191,7 @@ class MyAgentClient {
 interface WebSocketMessage {
     event: string;           // 事件类型
     timestamp: string;       // ISO 格式时间戳
-    session_id?: string;     // 会话 ID（可选）
+    session_id?: string;     // 会话 ID（除 system.connected 外必需）
     connection_id?: string;  // 连接 ID（可选）
     step_id?: string;        // 步骤 ID（可选）
     content?: string | object; // 消息内容
@@ -199,7 +199,40 @@ interface WebSocketMessage {
 }
 ```
 
-### 2.2 用户事件 (发送给服务器)
+### 2.2 Session ID 覆盖规则
+
+根据最新测试结果，MyAgent WebSocket 实现的 session_id 覆盖情况如下：
+
+**✅ 包含 session_id 的事件（100% 覆盖）:**
+- `agent.session_created` - 会话创建确认
+- `agent.thinking` - Agent 思考状态
+- `agent.tool_call` - 工具调用开始
+- `agent.tool_result` - 工具调用结果
+- `agent.partial_answer` - 流式回答片段
+- `agent.final_answer` - 最终回答
+- `agent.error` - Agent 执行错误
+
+**❌ 不包含 session_id 的事件（预期行为）:**
+- `system.connected` - 连接建立确认（此时尚未创建会话）
+- `system.heartbeat` - 心跳检测（系统级事件）
+- `system.error` - 系统级错误
+
+**前端处理建议:**
+```javascript
+// 检查消息是否需要 session_id
+function validateMessage(data) {
+    const systemEvents = ['system.connected', 'system.heartbeat', 'system.error'];
+    
+    if (!systemEvents.includes(data.event) && !data.session_id) {
+        console.warn(`Missing session_id for event: ${data.event}`);
+        return false;
+    }
+    
+    return true;
+}
+```
+
+### 2.3 用户事件 (发送给服务器)
 
 #### `user.create_session` - 创建会话
 ```javascript
@@ -230,7 +263,7 @@ interface WebSocketMessage {
 }
 ```
 
-### 2.3 Agent 事件 (服务器发送)
+### 2.4 Agent 事件 (服务器发送)
 
 #### `agent.session_created` - 会话创建成功
 ```javascript
@@ -286,7 +319,8 @@ interface WebSocketMessage {
     "content": "北京的天气：25°C，晴朗，湿度45%",
     "metadata": {
         "tool": "weather_api",
-        "status": "success"
+        "status": "success",
+        "error": null
     }
 }
 ```
@@ -316,7 +350,7 @@ interface WebSocketMessage {
 }
 ```
 
-### 2.4 系统事件
+### 2.5 系统事件
 
 #### `system.connected` - 连接确认
 ```javascript
@@ -386,6 +420,18 @@ export function useMyAgent(options: UseMyAgentOptions = {}) {
     const wsRef = useRef<WebSocket | null>(null);
     const streamingContentRef = useRef<string>('');
     
+    // 验证消息是否需要 session_id
+    const validateMessage = (data: any) => {
+        const systemEvents = ['system.connected', 'system.heartbeat', 'system.error'];
+        
+        if (!systemEvents.includes(data.event) && !data.session_id) {
+            console.warn(`Missing session_id for event: ${data.event}`);
+            return false;
+        }
+        
+        return true;
+    };
+    
     const connect = useCallback(async () => {
         try {
             const ws = new WebSocket(url);
@@ -420,6 +466,12 @@ export function useMyAgent(options: UseMyAgentOptions = {}) {
     
     const handleMessage = (data: any) => {
         const { event, session_id, content, metadata } = data;
+        
+        // 验证 session_id（除了系统事件外）
+        if (!validateMessage(data)) {
+            console.warn('Invalid message received:', data);
+            return;
+        }
         
         switch (event) {
             case 'system.connected':
@@ -1456,9 +1508,360 @@ class ConnectionManager {
 
 ---
 
-## 6. 最佳实践
+## 6. Session ID 最佳实践
 
-### 6.1 性能优化
+### 6.1 Session ID 管理
+
+```javascript
+class SessionManager {
+    constructor() {
+        this.sessions = new Map(); // sessionId -> sessionData
+        this.currentSession = null;
+    }
+    
+    createSession(sessionId, metadata = {}) {
+        const session = {
+            id: sessionId,
+            createdAt: new Date(),
+            lastActivity: new Date(),
+            metadata,
+            messages: [],
+            status: 'active'
+        };
+        
+        this.sessions.set(sessionId, session);
+        this.currentSession = sessionId;
+        
+        return session;
+    }
+    
+    updateSessionActivity(sessionId) {
+        const session = this.sessions.get(sessionId);
+        if (session) {
+            session.lastActivity = new Date();
+        }
+    }
+    
+    addMessage(sessionId, message) {
+        const session = this.sessions.get(sessionId);
+        if (session) {
+            session.messages.push({
+                ...message,
+                timestamp: new Date(),
+                id: this.generateMessageId()
+            });
+            this.updateSessionActivity(sessionId);
+        }
+    }
+    
+    validateSessionId(sessionId, eventType) {
+        // 系统事件不需要 session_id
+        const systemEvents = ['system.connected', 'system.heartbeat', 'system.error'];
+        
+        if (systemEvents.includes(eventType)) {
+            return true;
+        }
+        
+        // 非系统事件必须有有效的 session_id
+        if (!sessionId) {
+            console.warn(`Missing session_id for event: ${eventType}`);
+            return false;
+        }
+        
+        if (!this.sessions.has(sessionId)) {
+            console.warn(`Invalid session_id: ${sessionId}`);
+            return false;
+        }
+        
+        return true;
+    }
+    
+    generateMessageId() {
+        return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
+    getSession(sessionId) {
+        return this.sessions.get(sessionId);
+    }
+    
+    getCurrentSession() {
+        return this.currentSession ? this.sessions.get(this.currentSession) : null;
+    }
+    
+    clearSession(sessionId) {
+        this.sessions.delete(sessionId);
+        if (this.currentSession === sessionId) {
+            this.currentSession = null;
+        }
+    }
+}
+```
+
+### 6.2 多会话支持
+
+```javascript
+class MultiSessionWebSocketClient {
+    constructor(url) {
+        this.url = url;
+        this.ws = null;
+        this.sessionManager = new SessionManager();
+        this.eventHandlers = new Map(); // sessionId -> handlers
+    }
+    
+    async connect() {
+        this.ws = new WebSocket(this.url);
+        
+        this.ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            this.handleMessage(data);
+        };
+    }
+    
+    handleMessage(data) {
+        const { event, session_id } = data;
+        
+        // 验证 session_id
+        if (!this.sessionManager.validateSessionId(session_id, event)) {
+            return;
+        }
+        
+        // 更新会话活动时间
+        if (session_id) {
+            this.sessionManager.updateSessionActivity(session_id);
+        }
+        
+        // 路由消息到对应会话的处理器
+        const handlers = this.eventHandlers.get(session_id) || this.eventHandlers.get('global');
+        
+        if (handlers && handlers[event]) {
+            handlers[event](data);
+        }
+        
+        // 特殊事件处理
+        switch (event) {
+            case 'system.connected':
+                this.onSystemConnected(data);
+                break;
+                
+            case 'agent.session_created':
+                this.onSessionCreated(data);
+                break;
+                
+            case 'agent.error':
+                this.onSessionError(data);
+                break;
+        }
+    }
+    
+    createSession(sessionHandlers = {}) {
+        const message = {
+            event: 'user.create_session',
+            timestamp: new Date().toISOString(),
+            content: 'create_session'
+        };
+        
+        this.send(message);
+        
+        // 返回 Promise，在收到 session_created 后解析
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Session creation timeout'));
+            }, 10000);
+            
+            this.tempSessionPromise = { resolve, reject, timeout, handlers: sessionHandlers };
+        });
+    }
+    
+    onSessionCreated(data) {
+        const { session_id, metadata } = data;
+        
+        // 创建会话记录
+        this.sessionManager.createSession(session_id, metadata);
+        
+        // 注册会话处理器
+        if (this.tempSessionPromise) {
+            this.eventHandlers.set(session_id, this.tempSessionPromise.handlers);
+            clearTimeout(this.tempSessionPromise.timeout);
+            this.tempSessionPromise.resolve(session_id);
+            this.tempSessionPromise = null;
+        }
+    }
+    
+    sendMessage(sessionId, content) {
+        if (!this.sessionManager.getSession(sessionId)) {
+            throw new Error(`Session ${sessionId} not found`);
+        }
+        
+        const message = {
+            session_id: sessionId,
+            event: 'user.message',
+            timestamp: new Date().toISOString(),
+            content
+        };
+        
+        this.send(message);
+        this.sessionManager.addMessage(sessionId, {
+            type: 'user',
+            content,
+            event: 'user.message'
+        });
+    }
+    
+    send(message) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(message));
+        } else {
+            throw new Error('WebSocket not connected');
+        }
+    }
+}
+```
+
+### 6.3 错误处理和重连
+
+```javascript
+class RobustSessionClient extends MultiSessionWebSocketClient {
+    constructor(url, options = {}) {
+        super(url);
+        this.options = {
+            maxReconnectAttempts: 5,
+            reconnectDelay: 1000,
+            sessionRecoveryTimeout: 30000,
+            ...options
+        };
+        
+        this.reconnectCount = 0;
+        this.isManualDisconnect = false;
+    }
+    
+    async connect() {
+        try {
+            await super.connect();
+            
+            this.ws.onclose = (event) => {
+                if (!this.isManualDisconnect) {
+                    this.handleReconnect();
+                }
+            };
+            
+            this.reconnectCount = 0;
+            
+        } catch (error) {
+            if (this.reconnectCount < this.options.maxReconnectAttempts) {
+                setTimeout(() => {
+                    this.reconnectCount++;
+                    this.connect();
+                }, this.options.reconnectDelay * Math.pow(2, this.reconnectCount));
+            } else {
+                throw new Error('Max reconnection attempts reached');
+            }
+        }
+    }
+    
+    async handleReconnect() {
+        console.log('WebSocket disconnected, attempting to reconnect...');
+        
+        // 标记所有会话为重连状态
+        for (const [sessionId, session] of this.sessionManager.sessions) {
+            session.status = 'reconnecting';
+        }
+        
+        try {
+            await this.connect();
+            
+            // 尝试恢复会话
+            await this.recoverSessions();
+            
+        } catch (error) {
+            console.error('Reconnection failed:', error);
+            this.onReconnectFailed();
+        }
+    }
+    
+    async recoverSessions() {
+        const activeSessions = Array.from(this.sessionManager.sessions.keys());
+        
+        for (const sessionId of activeSessions) {
+            try {
+                // 发送会话恢复请求
+                const message = {
+                    event: 'user.recover_session',
+                    session_id: sessionId,
+                    timestamp: new Date().toISOString(),
+                    content: 'recover_session'
+                };
+                
+                this.send(message);
+                
+                // 等待会话恢复确认
+                await this.waitForSessionRecovery(sessionId);
+                
+            } catch (error) {
+                console.warn(`Failed to recover session ${sessionId}:`, error);
+                // 标记会话为失效
+                const session = this.sessionManager.getSession(sessionId);
+                if (session) {
+                    session.status = 'expired';
+                }
+            }
+        }
+    }
+    
+    waitForSessionRecovery(sessionId) {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Session recovery timeout'));
+            }, this.options.sessionRecoveryTimeout);
+            
+            // 临时处理器，等待恢复确认
+            const originalHandlers = this.eventHandlers.get(sessionId) || {};
+            this.eventHandlers.set(sessionId, {
+                ...originalHandlers,
+                'agent.session_recovered': (data) => {
+                    clearTimeout(timeout);
+                    const session = this.sessionManager.getSession(sessionId);
+                    if (session) {
+                        session.status = 'active';
+                    }
+                    // 恢复原始处理器
+                    this.eventHandlers.set(sessionId, originalHandlers);
+                    resolve();
+                },
+                'agent.error': (data) => {
+                    if (data.content.includes('会话不存在') || data.content.includes('session not found')) {
+                        clearTimeout(timeout);
+                        reject(new Error('Session expired'));
+                    } else {
+                        originalHandlers['agent.error']?.(data);
+                    }
+                }
+            });
+        });
+    }
+    
+    onReconnectFailed() {
+        // 通知所有会话连接失败
+        for (const [sessionId, handlers] of this.eventHandlers) {
+            if (handlers.onConnectionLost) {
+                handlers.onConnectionLost();
+            }
+        }
+    }
+    
+    disconnect() {
+        this.isManualDisconnect = true;
+        if (this.ws) {
+            this.ws.close();
+        }
+    }
+}
+```
+
+---
+
+## 7. 性能和安全最佳实践
+
+### 7.1 性能优化
 
 ```javascript
 // 消息缓存和批处理
@@ -1509,7 +1912,7 @@ const messageBuffer = new MessageBuffer({
 });
 ```
 
-### 6.2 内存管理
+### 7.2 内存管理
 
 ```javascript
 // 消息列表管理
@@ -1546,7 +1949,7 @@ class MessageManager {
 }
 ```
 
-### 6.3 安全考虑
+### 7.3 安全考虑
 
 ```javascript
 // 消息验证
@@ -1587,7 +1990,7 @@ class MessageValidator {
 }
 ```
 
-### 6.4 错误边界
+### 7.4 错误边界
 
 ```tsx
 // React Error Boundary

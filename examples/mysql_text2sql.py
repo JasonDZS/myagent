@@ -145,47 +145,76 @@ class MySQLSchemaTool(BaseTool):
         config = _load_mysql_config()
 
         def _inspect_schema() -> str:
-            with closing(_connect(config)) as connection, closing(connection.cursor()) as cursor:
-                if not table:
-                    cursor.execute("SHOW TABLES")
-                    tables = [next(iter(row.values())) for row in cursor.fetchall()]
-                    return (
-                        "Available tables:\n" + "\n".join(f"- {name}" for name in tables)
-                        if tables
-                        else "No tables found in the current database."
-                    )
+            try:
+                with closing(_connect(config)) as connection, closing(connection.cursor()) as cursor:
+                    if not table:
+                        cursor.execute("SHOW TABLES")
+                        tables = [next(iter(row.values())) for row in cursor.fetchall()]
+                        return (
+                            "Available tables:\n" + "\n".join(f"- {name}" for name in tables)
+                            if tables
+                            else "No tables found in the current database."
+                        )
 
-                cursor.execute(
-                    """
-                    SELECT column_name, data_type, is_nullable, column_key, column_type, column_comment
-                    FROM information_schema.columns
-                    WHERE table_schema = %s AND table_name = %s
-                    ORDER BY ordinal_position
-                    """,
-                    (config.database, table),
-                )
-                columns = cursor.fetchall()
-                if not columns:
-                    return f"Table '{table}' does not exist in database '{config.database}'."
-
-                lines = [f"Columns for {table}:"]
-                for col in columns:
-                    nullable = "NULLABLE" if col["is_nullable"] == "YES" else "NOT NULL"
-                    key = f" {col['column_key']}" if col["column_key"] else ""
-                    comment = f" -- {col['column_comment']}" if col["column_comment"] else ""
-                    lines.append(
-                        f"- {col['column_name']} ({col['column_type']} {nullable}{key}){comment}"
+                    # Debug info
+                    print(f"Querying table: {table} in database: {config.database}")
+                    cursor.execute(
+                        """
+                        SELECT column_name, data_type, is_nullable, column_key, column_type, column_comment
+                        FROM information_schema.columns
+                        WHERE table_schema = %s AND table_name = %s
+                        ORDER BY ordinal_position
+                        """,
+                        (config.database, table),
                     )
-                return "\n".join(lines)
+                    columns = cursor.fetchall()
+                    print(f"Found {len(columns)} columns")
+                    
+                    if not columns:
+                        return f"Table '{table}' does not exist in database '{config.database}'."
+
+                    lines = [f"Columns for {table}:"]
+                    for idx, col in enumerate(columns):
+                        if idx == 0:  # Debug: print keys for first column
+                            print(f"Column keys available: {list(col.keys())}")
+                        
+                        # Handle both uppercase and lowercase column names from information_schema
+                        column_name = col.get("column_name") or col.get("COLUMN_NAME", "unknown")
+                        column_type = col.get("column_type") or col.get("COLUMN_TYPE", "unknown")
+                        is_nullable = col.get("is_nullable") or col.get("IS_NULLABLE", "unknown")
+                        column_key = col.get("column_key") or col.get("COLUMN_KEY", "")
+                        column_comment = col.get("column_comment") or col.get("COLUMN_COMMENT", "")
+                        
+                        nullable = "NULLABLE" if is_nullable == "YES" else "NOT NULL"
+                        key = f" {column_key}" if column_key else ""
+                        comment = f" -- {column_comment}" if column_comment else ""
+                        lines.append(
+                            f"- {column_name} ({column_type} {nullable}{key}){comment}"
+                        )
+                    result = "\n".join(lines)
+                    print(f"Returning result length: {len(result)}")
+                    return result
+            except Exception as e:
+                error_msg = f"Database connection or query error: {e}"
+                print(f"Error in _inspect_schema: {error_msg}")
+                return error_msg
 
         try:
             result = await asyncio.to_thread(_inspect_schema)
+            print(f"Final result from _inspect_schema: {repr(result)}")
+            
+            if result is None:
+                return ToolResult(error="Schema inspection returned None - unexpected result")
+            
             return ToolResult(
                 output=result,
                 system=f"Schema inspection completed for {'table: ' + table if table else 'all tables'}"
             )
         except Exception as exc:  # pragma: no cover - depends on external DB
-            return ToolResult(error=f"Schema inspection failed: {exc}")
+            import traceback
+            error_detail = f"Schema inspection failed: {exc}\nTraceback: {traceback.format_exc()}"
+            print(f"Exception in execute: {error_detail}")
+            return ToolResult(error=error_detail)
 
 
 class MySQLQueryTool(BaseTool):
@@ -316,6 +345,35 @@ class MySQLValidateSQLTool(BaseTool):
             system=f"SQL validation completed for: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}"
         )
 
+schema_tool = MySQLSchemaTool()
+query_tool = MySQLQueryTool()
+validate_tool = MySQLValidateSQLTool()
+
+agent = create_react_agent(
+    name="mysql-text2sql",
+    tools=[schema_tool, query_tool, validate_tool],
+    system_prompt=(
+        "You are a MySQL expert that translates natural language questions into SQL. "
+        "Always inspect the schema first with mysql_schema if structure details are unclear. "
+        "Use mysql_query for lightweight exploratory reads and keep outputs concise. "
+        "When you have the final answer query, validate it with mysql_validate_sql to record it instead of fetching full results. "
+        "After validation, summarize the findings and cite the final SQL in your reply. "
+        "CRITICAL: When queries involve user names, person names, or any textual identifiers, you MUST: "
+        "1) NEVER hardcode numeric IDs - always look up IDs through JOINs "
+        "2) Generate complete JOIN queries that connect related tables in a single statement "
+        "3) Use proper table aliases for readability "
+        "For example, if asked about 'Jason's heart rate', write: "
+        "SELECT h.Time, h.Value FROM heartrate_seconds_merged h JOIN users u ON h.Id = u.Id WHERE u.name = 'Jason' ORDER BY h.Time "
+        "NOT: SELECT Time, Value FROM heartrate_seconds_merged WHERE Id = 123456 ORDER BY Time"
+    ),
+    next_step_prompt=(
+        "Call mysql_schema for structure, mysql_query for small exploratory checks, "
+        "and mysql_validate_sql to finalize the SQL answer without retrieving large result sets. "
+        "Remember: Always use JOINs to connect tables instead of hardcoding IDs!"
+    ),
+    max_steps=15,
+    enable_tracing=False,
+)
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="MySQL Text-to-SQL agent example with trace recording")
@@ -326,43 +384,6 @@ async def main() -> None:
         help="Natural-language question to answer with SQL.",
     )
     args = parser.parse_args()
-
-    # Setup trace manager with metadata
-    metadata = TraceMetadata(
-        user_id="mysql_text2sql_user",
-        session_id=f"mysql_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        tags=["mysql", "text2sql", "database_query"],
-        environment="example",
-        custom_fields={
-            "example_type": "mysql_text2sql",
-            "database_type": "mysql",
-            "question": args.question
-        }
-    )
-
-    schema_tool = MySQLSchemaTool()
-    query_tool = MySQLQueryTool()
-    validate_tool = MySQLValidateSQLTool()
-
-    agent = create_react_agent(
-        name="mysql-text2sql",
-        tools=[schema_tool, query_tool, validate_tool],
-        system_prompt=(
-            "You are a MySQL expert that translates natural language questions into SQL. "
-            "Always inspect the schema first with mysql_schema if structure details are unclear. "
-            "Use mysql_query for lightweight exploratory reads and keep outputs concise. "
-            "When you have the final answer query, validate it with mysql_validate_sql to record it instead of fetching full results. "
-            "After validation, summarize the findings and cite the final SQL in your reply."
-        ),
-        next_step_prompt=(
-            "Call mysql_schema for structure, mysql_query for small exploratory checks, "
-            "and mysql_validate_sql to finalize the SQL answer without retrieving large result sets."
-        ),
-        max_steps=15,
-        enable_tracing=True,
-        trace_metadata=metadata
-    )
-
     print(f"🔍 Starting MySQL Text-to-SQL with trace recording...")
     print(f"Question: {args.question}")
     

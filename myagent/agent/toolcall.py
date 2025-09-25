@@ -91,6 +91,9 @@ class ToolCallAgent(ReActAgent):
         )
         content = response.content if response and response.content else ""
 
+        # Send thinking content via WebSocket if available
+        await self._send_thinking_event(content)
+
         # Log response info
         logger.info(f"✨ {self.name}'s thoughts: {content}")
         logger.info(
@@ -257,8 +260,20 @@ class ToolCallAgent(ReActAgent):
     async def _generate_final_summary(self):
         """Generate a final summary of the conversation and task execution"""
         try:
+            # Find the original user question (first user message)
+            original_question = None
+            for msg in self.memory.messages:
+                if msg.role == "user":
+                    original_question = msg.content
+                    break
+            
+            # Create summary prompt including original question
+            summary_prompt_with_question = SUMMARY_PROMPT
+            if original_question:
+                summary_prompt_with_question = f"Original Question: {original_question}\n\n{SUMMARY_PROMPT}"
+            
             # Add user message to prompt for summary generation
-            summary_user_msg = Message.user_message(SUMMARY_PROMPT)
+            summary_user_msg = Message.user_message(summary_prompt_with_question)
             self.memory.add_message(summary_user_msg)
             
             logger.info("📝 Generating final summary of the conversation...")
@@ -515,6 +530,36 @@ class ToolCallAgent(ReActAgent):
                 content=f"流式生成出错: {str(e)}"
             ))
             raise
+
+    async def _send_thinking_event(self, content: str):
+        """Send thinking event via WebSocket if available"""
+        if not content:
+            return
+            
+        # Check if we have WebSocket streaming capabilities
+        ws_session = None
+        
+        # Try to get WebSocket session from trace manager
+        if TRACE_AVAILABLE:
+            try:
+                trace_manager = get_trace_manager()
+                if hasattr(trace_manager, 'ws_session'):
+                    ws_session = trace_manager.ws_session
+            except Exception as e:
+                logger.debug(f"Could not get WebSocket session: {e}")
+        
+        if ws_session:
+            try:
+                from ..ws.events import create_event, AgentEvents
+                
+                await ws_session._send_event(create_event(
+                    AgentEvents.THINKING,
+                    session_id=ws_session.session_id,
+                    content=content,
+                    metadata={"step": getattr(self, '_current_step', 0)}
+                ))
+            except Exception as e:
+                logger.debug(f"Failed to send thinking event: {e}")
 
     async def cleanup(self):
         """Clean up resources used by the agent's tools."""

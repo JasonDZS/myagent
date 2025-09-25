@@ -16,14 +16,14 @@ sequenceDiagram
     Note right of F: ws://localhost:8080
     
     WS-->>F: system.connected
-    Note left of WS: {"event":"system.connected",<br/>"content":"Connected to MyAgent WebSocket Server",<br/>"metadata":{"connection_id":"conn_123"}}
+    Note left of WS: ⚠️ NO session_id (expected)<br/>{"event":"system.connected",<br/>"content":"Connected to MyAgent WebSocket Server",<br/>"metadata":{"connection_id":"conn_123"}}
     
     F->>WS: user.create_session
     Note right of F: {"event":"user.create_session",<br/>"timestamp":"2024-01-01T12:00:00Z",<br/>"content":"create_session"}
     
     WS->>A: 创建Agent实例
     WS-->>F: agent.session_created
-    Note left of WS: {"event":"agent.session_created",<br/>"session_id":"sess_abc123",<br/>"content":"会话创建成功",<br/>"metadata":{"agent_name":"weather-assistant"}}
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.session_created",<br/>"session_id":"sess_abc123",<br/>"content":"会话创建成功",<br/>"metadata":{"agent_name":"weather-assistant"}}
 
     Note over F,LLM: 2. 用户发送消息 - 天气查询
 
@@ -34,7 +34,7 @@ sequenceDiagram
     
     A-->>WS: agent.thinking
     WS-->>F: agent.thinking
-    Note left of WS: {"event":"agent.thinking",<br/>"session_id":"sess_abc123",<br/>"content":"正在分析您的问题...",<br/>"metadata":{"step":1}}
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.thinking",<br/>"session_id":"sess_abc123",<br/>"content":"正在分析您的问题...",<br/>"metadata":{"step":1}}
 
     A->>LLM: 分析用户意图
     Note right of A: messages: [<br/>{"role":"system","content":"你是天气助手..."},<br/>{"role":"user","content":"北京今天的天气怎么样？"}]
@@ -44,7 +44,7 @@ sequenceDiagram
 
     A-->>WS: agent.tool_call
     WS-->>F: agent.tool_call
-    Note left of WS: {"event":"agent.tool_call",<br/>"step_id":"step_1_weather",<br/>"content":"调用工具: get_weather",<br/>"metadata":{"tool":"get_weather","args":{"city":"北京"},"status":"running"}}
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.tool_call",<br/>"session_id":"sess_abc123",<br/>"step_id":"step_1_weather",<br/>"content":"调用工具: get_weather",<br/>"metadata":{"tool":"get_weather","args":{"city":"北京"},"status":"running"}}
 
     A->>T: 执行天气查询工具
     Note right of A: get_weather(city="北京")
@@ -54,7 +54,7 @@ sequenceDiagram
 
     A-->>WS: agent.tool_result
     WS-->>F: agent.tool_result
-    Note left of WS: {"event":"agent.tool_result",<br/>"step_id":"step_1_weather",<br/>"content":"北京的天气：25°C，晴朗，湿度45%",<br/>"metadata":{"tool":"get_weather","status":"success"}}
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.tool_result",<br/>"session_id":"sess_abc123",<br/>"step_id":"step_1_weather",<br/>"content":"北京的天气：25°C，晴朗，湿度45%",<br/>"metadata":{"tool":"get_weather","status":"success"}}
 
     A->>LLM: 生成最终回答
     Note right of A: messages: [..., <br/>{"role":"tool","content":"北京的天气：25°C，晴朗，湿度45%"}]
@@ -64,7 +64,7 @@ sequenceDiagram
 
     A-->>WS: agent.final_answer
     WS-->>F: agent.final_answer
-    Note left of WS: {"event":"agent.final_answer",<br/>"session_id":"sess_abc123",<br/>"content":"根据最新数据，北京今天天气晴朗，气温25°C，湿度45%。适合外出活动。"}
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.final_answer",<br/>"session_id":"sess_abc123",<br/>"content":"根据最新数据，北京今天天气晴朗，气温25°C，湿度45%。适合外出活动。"}
 
     Note over F,LLM: 3. 用户发送新消息 - 请求总结
 
@@ -123,7 +123,7 @@ sequenceDiagram
     Note over F,LLM: 4. 系统心跳和连接维护
 
     WS-->>F: system.heartbeat
-    Note left of WS: {"event":"system.heartbeat",<br/>"metadata":{"active_sessions":1,"uptime":3600}}
+    Note left of WS: ⚠️ NO session_id (system event)<br/>{"event":"system.heartbeat",<br/>"metadata":{"active_sessions":1,"uptime":3600}}
 
     Note over F,LLM: 5. 用户取消操作示例
 
@@ -358,4 +358,27 @@ sequenceDiagram
 8. **错误处理**: 各种异常情况的错误消息返回
 9. **连接维护**: 心跳检测和重连机制
 
-这个时序图展示了完整的前后端交互流程，包含了实际的消息内容格式，方便前端开发者理解和实现。
+### Session ID 覆盖说明：
+
+**✅ 包含 session_id 的事件** (标记为 "HAS session_id"):
+- `agent.session_created` - 会话创建确认
+- `agent.thinking` - Agent 思考状态  
+- `agent.tool_call` - 工具调用开始
+- `agent.tool_result` - 工具调用结果
+- `agent.partial_answer` - 流式回答片段
+- `agent.final_answer` - 最终回答
+- `agent.error` - Agent 执行错误
+- `agent.interrupted` - 用户取消操作
+
+**⚠️ 不包含 session_id 的事件** (标记为 "NO session_id"):
+- `system.connected` - 连接建立确认（此时尚未创建会话）
+- `system.heartbeat` - 心跳检测（系统级事件）
+- `system.error` - 系统级错误
+
+**前端处理要点:**
+1. 只有系统级事件 (`system.*`) 不包含 session_id，这是预期行为
+2. 所有 Agent 相关事件都必须包含 session_id，用于前端会话跟踪
+3. 前端应该验证非系统事件的 session_id 字段
+4. session_id 用于多会话场景下的消息路由和状态管理
+
+这个时序图展示了完整的前后端交互流程，包含了实际的消息内容格式和session_id覆盖情况，方便前端开发者理解和实现。
