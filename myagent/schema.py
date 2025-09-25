@@ -185,3 +185,66 @@ class Memory(BaseModel):
     def to_dict_list(self) -> List[dict]:
         """Convert messages to list of dicts"""
         return [msg.to_dict() for msg in self.messages]
+    
+    def clean_incomplete_tool_calls(self) -> None:
+        """Clean incomplete tool_calls messages to fix OpenAI API compatibility.
+        
+        Removes:
+        1. Assistant messages with tool_calls that don't have corresponding tool response messages
+        2. Orphaned tool messages that don't have a preceding assistant message with tool_calls
+        
+        This fixes API errors in multi-turn conversations.
+        """
+        if not self.messages:
+            return
+            
+        # First pass: identify all valid tool_call_ids that have complete chains
+        valid_tool_call_ids = set()
+        
+        for i, msg in enumerate(self.messages):
+            if (msg.role == Role.ASSISTANT.value and 
+                msg.tool_calls is not None and 
+                len(msg.tool_calls) > 0):
+                
+                tool_call_ids = {tc.id for tc in msg.tool_calls}
+                found_responses = set()
+                
+                # Check subsequent messages for tool responses
+                j = i + 1
+                while j < len(self.messages):
+                    next_msg = self.messages[j]
+                    
+                    if (next_msg.role == Role.TOOL.value and 
+                        next_msg.tool_call_id in tool_call_ids):
+                        found_responses.add(next_msg.tool_call_id)
+                    elif next_msg.role in [Role.ASSISTANT.value, Role.USER.value]:
+                        break
+                    j += 1
+                
+                # If all tool calls have responses, mark them as valid
+                if found_responses == tool_call_ids:
+                    valid_tool_call_ids.update(tool_call_ids)
+        
+        # Second pass: keep only messages that are valid
+        cleaned_messages = []
+        
+        for msg in self.messages:
+            if msg.role == Role.TOOL.value:
+                # Keep tool messages only if they respond to valid tool calls
+                if msg.tool_call_id in valid_tool_call_ids:
+                    cleaned_messages.append(msg)
+                # Otherwise skip orphaned tool messages
+            elif (msg.role == Role.ASSISTANT.value and 
+                  msg.tool_calls is not None and 
+                  len(msg.tool_calls) > 0):
+                # Keep assistant messages with tool_calls only if all their calls are valid
+                tool_call_ids = {tc.id for tc in msg.tool_calls}
+                if tool_call_ids.issubset(valid_tool_call_ids):
+                    cleaned_messages.append(msg)
+                # Otherwise skip incomplete tool_calls messages
+            else:
+                # Keep all other messages (user, system, assistant without tool_calls)
+                cleaned_messages.append(msg)
+        
+        # Update messages with cleaned version
+        self.messages = cleaned_messages

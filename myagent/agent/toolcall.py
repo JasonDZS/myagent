@@ -243,7 +243,6 @@ class ToolCallAgent(ReActAgent):
         if self._should_finish_execution(name=name, result=result, **kwargs):
             # Generate summary before finishing
             await self._generate_final_summary()
-            
 
             logger.info(f"🏁 Special tool '{name}' has completed the task!")
             self.state = AgentState.FINISHED

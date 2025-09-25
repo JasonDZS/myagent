@@ -99,6 +99,12 @@ class AgentSession:
                 logger.info(f"Resetting agent state from {self.agent.state} to IDLE for session {self.session_id}")
                 self.agent.state = AgentState.IDLE
                 self.agent.current_step = 0
+                
+                # Clean incomplete tool_calls messages to fix multi-turn conversation issues
+                messages_before = len(self.agent.memory.messages)
+                self.agent.memory.clean_incomplete_tool_calls()
+                messages_after = len(self.agent.memory.messages)
+                logger.info(f"Cleaned incomplete tool_calls from agent memory for session {self.session_id}: {messages_before} -> {messages_after} messages")
             
             # 监控 Agent 工具调用
             self._wrap_tool_calls()
