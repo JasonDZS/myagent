@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
+import asyncio
 
 from pydantic import BaseModel, Field
 
@@ -12,16 +13,38 @@ class BaseTool(ABC, BaseModel):
     description: str
     parameters: Optional[dict] = None
     enable_tracing: bool = Field(default=True, description="Enable execution tracing")
+    user_confirm: bool = Field(default=False, description="Require user confirmation before execution")
 
     class Config:
         arbitrary_types_allowed = True
 
     async def __call__(self, **kwargs) -> Any:
         """Execute the tool with given parameters."""
+        # Check if user confirmation is required
+        if self.user_confirm:
+            confirmed = await self._request_user_confirmation(**kwargs)
+            if not confirmed:
+                return ToolResult(error="Tool execution cancelled by user")
+        
         if self.enable_tracing:
             return await self._traced_execute(**kwargs)
         else:
             return await self.execute(**kwargs)
+    
+    async def _request_user_confirmation(self, **kwargs) -> bool:
+        """Request user confirmation for tool execution."""
+        # Try to get the WebSocket session from the current context
+        confirmation_handler = getattr(self, '_confirmation_handler', None)
+        if confirmation_handler:
+            return await confirmation_handler(self, kwargs)
+        
+        # Fallback: no WebSocket context, assume confirmation granted
+        # This allows tools to work in non-WebSocket environments
+        return True
+    
+    def set_confirmation_handler(self, handler):
+        """Set the confirmation handler for WebSocket sessions."""
+        self._confirmation_handler = handler
     
     async def _traced_execute(self, **kwargs) -> Any:
         """Execute the tool with tracing enabled."""

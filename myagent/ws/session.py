@@ -43,11 +43,8 @@ class AgentSession:
                     self.step_counter += 1
                     return result
                 except Exception as e:
-                    await self._send_event(create_event(
-                        AgentEvents.ERROR,
-                        session_id=self.session_id,
-                        content=f"执行出错: {str(e)}"
-                    ))
+                    # Log error but don't send event here to avoid async issues in sync context
+                    logger.error(f"Agent step execution error in session {self.session_id}: {str(e)}")
                     raise
                     
             self.agent.step = wrapped_step
@@ -162,6 +159,9 @@ class AgentSession:
             
         tools = self.agent.available_tools
         
+        # Setup confirmation handlers for tools that require user confirmation
+        self._setup_confirmation_handlers(tools)
+        
         # Check if it's a ToolCollection and wrap its execute method
         if hasattr(tools, 'execute') and hasattr(tools, 'tool_map'):
             original_execute = getattr(tools, 'execute')
@@ -230,6 +230,91 @@ class AgentSession:
         else:
             logger.warning(f"Unknown tools structure: {type(tools)}, cannot wrap")
     
+    def _setup_confirmation_handlers(self, tools):
+        """Setup confirmation handlers for tools that require user confirmation."""
+        if hasattr(tools, 'tool_map'):
+            # ToolCollection
+            for tool_name, tool in tools.tool_map.items():
+                if hasattr(tool, 'user_confirm') and tool.user_confirm:
+                    tool.set_confirmation_handler(self._handle_tool_confirmation)
+                    logger.info(f"Setup confirmation handler for tool: {tool_name}")
+        elif hasattr(tools, '__iter__'):
+            # List of tools
+            for tool in tools:
+                if hasattr(tool, 'user_confirm') and tool.user_confirm:
+                    tool.set_confirmation_handler(self._handle_tool_confirmation)
+                    logger.info(f"Setup confirmation handler for tool: {tool.name}")
+        else:
+            logger.debug(f"Tools structure {type(tools)} not recognized for confirmation setup")
+    
+    async def _handle_tool_confirmation(self, tool, kwargs):
+        """Handle user confirmation for a tool execution."""
+        # Use a unique UUID-based step_id to avoid conflicts with regular tool step_ids
+        import uuid
+        step_id = f"confirm_{uuid.uuid4().hex[:8]}_{tool.name}"
+        
+        logger.info(f"Requesting user confirmation for tool '{tool.name}' with step_id: {step_id}")
+        
+        # Send user confirmation request
+        await self._send_event(create_event(
+            AgentEvents.USER_CONFIRM,
+            session_id=self.session_id,
+            step_id=step_id,
+            content=f"确认执行工具: {tool.name}",
+            metadata={
+                "tool_name": tool.name,
+                "tool_description": tool.description,
+                "tool_args": kwargs,
+                "requires_confirmation": True
+            }
+        ))
+        
+        # Wait for user response
+        try:
+            confirmation_result = await self._wait_for_user_response(step_id)
+            confirmed = confirmation_result.get("confirmed", False)
+            logger.info(f"User {'confirmed' if confirmed else 'denied'} tool execution for '{tool.name}'")
+            return confirmed
+        except Exception as e:
+            logger.error(f"Error waiting for user response for step_id {step_id}: {e}")
+            return False
+    
+    async def _wait_for_user_response(self, step_id: str, timeout: int = 300):
+        """Wait for user response with timeout."""
+        if not hasattr(self, '_pending_confirmations'):
+            self._pending_confirmations = {}
+        
+        future = asyncio.Future()
+        self._pending_confirmations[step_id] = future
+        
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout)
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"User confirmation timeout for step {step_id} after {timeout}s")
+            return {"confirmed": False, "reason": "timeout"}
+        except Exception as e:
+            logger.error(f"Exception while waiting for user response for step_id {step_id}: {e}")
+            return {"confirmed": False, "reason": f"error: {str(e)}"}
+        finally:
+            self._pending_confirmations.pop(step_id, None)
+    
+    async def handle_user_response(self, step_id: str, response_data: dict):
+        """Handle user response for confirmations."""
+        if not hasattr(self, '_pending_confirmations'):
+            self._pending_confirmations = {}
+        
+        future = self._pending_confirmations.get(step_id)
+        if future:
+            if not future.done():
+                future.set_result(response_data)
+                logger.debug(f"User response processed for step {step_id}")
+            else:
+                logger.warning(f"Future for step_id {step_id} is already done")
+        else:
+            logger.warning(f"No pending confirmation found for step {step_id}")
+            logger.warning(f"Available pending confirmations: {list(self._pending_confirmations.keys())}")
+    
     async def cancel(self) -> None:
         """取消当前执行"""
         if self.current_task and not self.current_task.done():
@@ -259,6 +344,10 @@ class AgentSession:
     
     def is_active(self) -> bool:
         """检查会话是否仍然活跃"""
+        # 如果有待处理的确认请求，认为会话仍然活跃
+        if hasattr(self, '_pending_confirmations') and self._pending_confirmations:
+            return True
+            
         if hasattr(self.websocket, 'closed'):
             is_closed = self.websocket.closed
         else:

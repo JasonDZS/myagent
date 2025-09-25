@@ -49,12 +49,13 @@ class AgentWebSocketServer:
                     data = json.loads(message)
                     await self._handle_message(websocket, connection_id, data)
                 except json.JSONDecodeError as e:
+                    logger.error(f"JSON decode error from {connection_id}: {e}")
                     await self._send_event(websocket, create_event(
                         SystemEvents.ERROR,
                         content=f"Invalid JSON: {str(e)}"
                     ))
                 except Exception as e:
-                    logger.error(f"Error handling message: {e}")
+                    logger.error(f"Error handling message from {connection_id}: {e}")
                     await self._send_event(websocket, create_event(
                         SystemEvents.ERROR,
                         content=f"Message handling error: {str(e)}"
@@ -73,18 +74,30 @@ class AgentWebSocketServer:
         event_type = message.get("event")
         session_id = message.get("session_id")
         
-        logger.debug(f"Received message: {event_type} from {connection_id}")
+        logger.debug(f"Processing message: event={event_type}, session_id={session_id}")
+        if event_type == UserEvents.RESPONSE:
+            logger.info(f"User response received: session={session_id}, step_id={message.get('step_id')}")
         
         if event_type == UserEvents.CREATE_SESSION:
+            logger.info("Handling CREATE_SESSION event")
             await self._create_session(websocket, connection_id, message)
             
         elif event_type == UserEvents.MESSAGE and session_id:
-            await self._handle_user_message(websocket, session_id, message)
+            logger.info(f"Handling MESSAGE event for session {session_id}")
+            # 异步执行，不阻塞消息处理循环
+            asyncio.create_task(self._handle_user_message(websocket, session_id, message))
+            
+        elif event_type == UserEvents.RESPONSE and session_id:
+            logger.info(f"Handling RESPONSE event for session {session_id}")
+            await self._handle_user_response(websocket, session_id, message)
             
         elif event_type == UserEvents.CANCEL and session_id:
+            logger.info(f"Handling CANCEL event for session {session_id}")
             await self._cancel_session(session_id)
             
         else:
+            logger.warning(f"Unknown event type or missing session_id: event={event_type}, session_id={session_id}")
+            logger.warning(f"Available event types: CREATE_SESSION={UserEvents.CREATE_SESSION}, MESSAGE={UserEvents.MESSAGE}, RESPONSE={UserEvents.RESPONSE}, CANCEL={UserEvents.CANCEL}")
             await self._send_event(websocket, create_event(
                 SystemEvents.ERROR,
                 content=f"Unknown event type or missing session_id: {event_type}"
@@ -164,15 +177,53 @@ class AgentWebSocketServer:
             
         logger.info(f"Processing user message for session {session_id}: {user_input[:50]}...")
         
-        # 异步执行 Agent 并流式推送结果
+        # 异步执行 Agent 并流式推送结果（在独立任务中，不阻塞消息处理）
         try:
             await session.execute_streaming(user_input)
         except Exception as e:
             logger.error(f"Error executing agent for session {session_id}: {e}")
+            try:
+                await self._send_event(websocket, create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content=f"Agent 执行出错: {str(e)}"
+                ))
+            except Exception as send_error:
+                logger.error(f"Failed to send error event: {send_error}")
+    
+    async def _handle_user_response(self, websocket: WebSocketServerProtocol,
+                                   session_id: str, message: Dict[str, Any]) -> None:
+        """处理用户响应（用于工具确认等）"""        
+        session = self.sessions.get(session_id)
+        if not session:
+            logger.error(f"Session {session_id} not found for user response")
             await self._send_event(websocket, create_event(
                 AgentEvents.ERROR,
                 session_id=session_id,
-                content=f"Agent 执行出错: {str(e)}"
+                content="会话不存在"
+            ))
+            return
+            
+        step_id = message.get("step_id")
+        if not step_id:
+            logger.error(f"Missing step_id in user response for session {session_id}")
+            await self._send_event(websocket, create_event(
+                AgentEvents.ERROR,
+                session_id=session_id,
+                content="Missing step_id in user response"
+            ))
+            return
+            
+        response_data = message.get("content", {})
+        
+        try:
+            await session.handle_user_response(step_id, response_data)
+        except Exception as e:
+            logger.error(f"Error processing user response for session {session_id}: {e}")
+            await self._send_event(websocket, create_event(
+                AgentEvents.ERROR,
+                session_id=session_id,
+                content=f"Error processing user response: {str(e)}"
             ))
     
     async def _cancel_session(self, session_id: str) -> None:

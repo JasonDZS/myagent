@@ -240,6 +240,7 @@ class MySQLQueryTool(BaseTool):
     last_sql: Optional[str] = Field(default=None, exclude=True)
     executed_sql: List[str] = Field(default_factory=list, exclude=True)
     output_char_limit: int = Field(default=2000, exclude=True)
+    user_confirm: bool = Field(default=True, exclude=True)
 
     async def execute(self, sql: str, max_rows: int = 20) -> ToolResult:
         stripped_sql = sql.strip().rstrip(";")
