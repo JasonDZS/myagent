@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import tiktoken
 from openai import (
@@ -35,6 +35,24 @@ try:
     TRACE_AVAILABLE = True
 except ImportError:
     TRACE_AVAILABLE = False
+
+try:
+    import sys
+    import os
+    # Add the myagent-ws directory to path for import
+    ws_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'myagent-ws')
+    if os.path.exists(ws_path) and ws_path not in sys.path:
+        sys.path.insert(0, ws_path)
+    
+    from websocket_trace_protocol import (
+        StreamEventData, 
+        create_stream_started_message,
+        create_stream_chunk_message, 
+        create_stream_completed_message
+    )
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
 
 
 REASONING_MODELS = ["o1", "o3-mini", "Qwen/Qwen3-32B"]
@@ -927,4 +945,235 @@ class LLM:
             raise
         except Exception as e:
             logger.error(f"Unexpected error in ask_tool: {e}")
+            raise
+
+    async def ask_with_streaming(
+        self,
+        messages: List[Union[dict, Message]],
+        system_msgs: Optional[List[Union[dict, Message]]] = None,
+        temperature: Optional[float] = None,
+        websocket_manager=None,
+        session_id: Optional[str] = None,
+        stream_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Send a prompt to the LLM with real-time streaming to WebSocket clients.
+        
+        Args:
+            messages: List of conversation messages
+            system_msgs: Optional system messages to prepend
+            temperature: Sampling temperature for the response
+            websocket_manager: WebSocket connection manager for broadcasting
+            session_id: Session ID for WebSocket broadcasting
+            stream_context: Additional context for streaming (run_id, trace_id, etc.)
+            
+        Returns:
+            str: The complete generated response
+        """
+        import uuid
+        from datetime import datetime
+        
+        # Generate unique stream ID
+        stream_id = f"stream_{uuid.uuid4().hex[:12]}"
+        
+        # Use tracing wrapper
+        inputs = {
+            "messages": messages,
+            "system_msgs": system_msgs,
+            "temperature": temperature,
+            "stream": True
+        }
+        
+        return await self._traced_llm_call(
+            "ask_with_streaming",
+            inputs,
+            lambda: self._ask_with_streaming_impl(
+                messages, system_msgs, temperature, 
+                websocket_manager, session_id, stream_context, stream_id
+            )
+        )
+    
+    async def _ask_with_streaming_impl(
+        self,
+        messages: List[Union[dict, Message]],
+        system_msgs: Optional[List[Union[dict, Message]]] = None,
+        temperature: Optional[float] = None,
+        websocket_manager=None,
+        session_id: Optional[str] = None,
+        stream_context: Optional[Dict[str, Any]] = None,
+        stream_id: str = None
+    ) -> str:
+        """Internal implementation of streaming ask method."""
+        from datetime import datetime
+        
+        try:
+            # Check if the model supports images
+            supports_images = self.model in MULTIMODAL_MODELS
+
+            # Format system and user messages with image support check
+            if system_msgs:
+                system_msgs = self.format_messages(system_msgs, supports_images)
+                messages = system_msgs + self.format_messages(messages, supports_images)
+            else:
+                messages = self.format_messages(messages, supports_images)
+
+            # Calculate input token count
+            input_tokens = self.count_message_tokens(messages)
+            logger.info(f"Input tokens for streaming request: {input_tokens}")
+
+            # Check if token limits are exceeded
+            if not self.check_token_limit(input_tokens):
+                error_message = self.get_limit_error_message(input_tokens)
+                raise TokenLimitExceeded(error_message)
+
+            # Update token count for input
+            self.update_token_count(input_tokens)
+
+            params = {
+                "model": self.model,
+                "messages": messages,
+                "stream": True
+            }
+
+            if self.model in REASONING_MODELS:
+                params["max_completion_tokens"] = self.max_tokens
+            else:
+                params["max_tokens"] = self.max_tokens
+                params["temperature"] = (
+                    temperature if temperature is not None else self.temperature
+                )
+
+            # Send stream started event
+            if websocket_manager and session_id and WEBSOCKET_AVAILABLE:
+                stream_data = StreamEventData(
+                    run_id=stream_context.get("run_id", "unknown") if stream_context else "unknown",
+                    trace_id=stream_context.get("trace_id", "unknown") if stream_context else "unknown", 
+                    parent_run_id=stream_context.get("parent_run_id") if stream_context else None,
+                    stream_id=stream_id,
+                    model=self.model,
+                    method="ask_with_streaming",
+                    start_time=datetime.now()
+                )
+                
+                message = create_stream_started_message(stream_data, session_id)
+                await websocket_manager.send_message(session_id, message)
+
+            # Create streaming request
+            response = await self.client.chat.completions.create(**params)
+
+            collected_messages = []
+            completion_text = ""
+            chunk_index = 0
+            start_time = datetime.now()
+
+            async for chunk in response:
+                chunk_message = chunk.choices[0].delta.content or ""
+                if chunk_message:  # Only process non-empty chunks
+                    collected_messages.append(chunk_message)
+                    completion_text += chunk_message
+                    
+                    # Send chunk via WebSocket
+                    if websocket_manager and session_id and WEBSOCKET_AVAILABLE:
+                        chunk_data = StreamEventData(
+                            run_id=stream_context.get("run_id", "unknown") if stream_context else "unknown",
+                            trace_id=stream_context.get("trace_id", "unknown") if stream_context else "unknown",
+                            parent_run_id=stream_context.get("parent_run_id") if stream_context else None,
+                            stream_id=stream_id,
+                            model=self.model,
+                            method="ask_with_streaming",
+                            chunk=chunk_message,
+                            chunk_index=chunk_index
+                        )
+                        
+                        chunk_msg = create_stream_chunk_message(chunk_data, session_id)
+                        await websocket_manager.send_message(session_id, chunk_msg)
+                    
+                    chunk_index += 1
+                    
+                    # Also print to console for backwards compatibility
+                    print(chunk_message, end="", flush=True)
+
+            print()  # Newline after streaming
+            full_response = "".join(collected_messages).strip()
+            
+            if not full_response:
+                raise ValueError("Empty response from streaming LLM")
+
+            # Send stream completed event
+            if websocket_manager and session_id and WEBSOCKET_AVAILABLE:
+                end_time = datetime.now()
+                duration_ms = (end_time - start_time).total_seconds() * 1000
+                
+                completed_data = StreamEventData(
+                    run_id=stream_context.get("run_id", "unknown") if stream_context else "unknown",
+                    trace_id=stream_context.get("trace_id", "unknown") if stream_context else "unknown",
+                    parent_run_id=stream_context.get("parent_run_id") if stream_context else None,
+                    stream_id=stream_id,
+                    model=self.model,
+                    method="ask_with_streaming",
+                    end_time=end_time,
+                    duration_ms=duration_ms,
+                    full_response=full_response,
+                    response_length=len(full_response),
+                    success=True
+                )
+                
+                completed_msg = create_stream_completed_message(completed_data, session_id)
+                await websocket_manager.send_message(session_id, completed_msg)
+
+            # Estimate completion tokens for streaming response
+            completion_tokens = self.count_tokens(completion_text)
+            logger.info(f"Estimated completion tokens for streaming response: {completion_tokens}")
+            self.total_completion_tokens += completion_tokens
+
+            # Log LLM call
+            llm_logger = get_llm_logger()
+            llm_logger.log_llm_call(
+                model=self.model,
+                messages=messages,
+                response=full_response,
+                metadata={
+                    "input_tokens": input_tokens,
+                    "output_tokens": completion_tokens,
+                    "stream": True,
+                    "websocket_streaming": bool(websocket_manager and session_id),
+                    "temperature": temperature if temperature is not None else self.temperature
+                }
+            )
+
+            return full_response
+
+        except TokenLimitExceeded:
+            # Send error via WebSocket if available
+            if websocket_manager and session_id and WEBSOCKET_AVAILABLE:
+                error_data = StreamEventData(
+                    run_id=stream_context.get("run_id", "unknown") if stream_context else "unknown",
+                    trace_id=stream_context.get("trace_id", "unknown") if stream_context else "unknown",
+                    parent_run_id=stream_context.get("parent_run_id") if stream_context else None,
+                    stream_id=stream_id,
+                    model=self.model,
+                    method="ask_with_streaming",
+                    end_time=datetime.now(),
+                    success=False,
+                    error="Token limit exceeded"
+                )
+                error_msg = create_stream_completed_message(error_data, session_id)
+                await websocket_manager.send_message(session_id, error_msg)
+            raise
+        except Exception as e:
+            # Send error via WebSocket if available
+            if websocket_manager and session_id and WEBSOCKET_AVAILABLE:
+                error_data = StreamEventData(
+                    run_id=stream_context.get("run_id", "unknown") if stream_context else "unknown",
+                    trace_id=stream_context.get("trace_id", "unknown") if stream_context else "unknown",
+                    parent_run_id=stream_context.get("parent_run_id") if stream_context else None,
+                    stream_id=stream_id,
+                    model=self.model,
+                    method="ask_with_streaming",
+                    end_time=datetime.now(),
+                    success=False,
+                    error=str(e)
+                )
+                error_msg = create_stream_completed_message(error_data, session_id)
+                await websocket_manager.send_message(session_id, error_msg)
             raise

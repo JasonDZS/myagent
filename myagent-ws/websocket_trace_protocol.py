@@ -33,10 +33,17 @@ class TraceEventType(str, Enum):
     THINK_COMPLETED = "think_completed"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
+    SUMMARY_STARTED = "summary_started"
+    SUMMARY_COMPLETED = "summary_completed"
     
     # Status events
     STATUS_UPDATE = "status_update"
     PROGRESS_UPDATE = "progress_update"
+    
+    # Streaming events
+    STREAM_STARTED = "stream_started"
+    STREAM_CHUNK = "stream_chunk"
+    STREAM_COMPLETED = "stream_completed"
 
 
 class WebSocketMessage(BaseModel):
@@ -106,6 +113,50 @@ class ProgressUpdateData(BaseModel):
     estimated_time_remaining: Optional[float] = None
 
 
+class SummaryEventData(BaseModel):
+    """Summary generation event data"""
+    run_id: str
+    trace_id: str
+    parent_run_id: Optional[str]
+    trigger: str  # e.g., "special_tool_execution"
+    special_tool_name: Optional[str] = None
+    summary_type: str = "automatic_final_summary"
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    duration_ms: Optional[float] = None
+    # For SUMMARY_STARTED
+    summary_prompt: Optional[str] = None
+    original_message_count: Optional[int] = None
+    cleaned_message_count: Optional[int] = None
+    # For SUMMARY_COMPLETED
+    summary_content: Optional[str] = None
+    summary_length: Optional[int] = None
+    success: bool = True
+    error: Optional[str] = None
+
+
+class StreamEventData(BaseModel):
+    """Streaming event data"""
+    run_id: str
+    trace_id: str
+    parent_run_id: Optional[str]
+    stream_id: str  # unique identifier for this stream session
+    model: str
+    method: str  # ask, ask_tool, etc.
+    # For STREAM_STARTED
+    start_time: Optional[datetime] = None
+    # For STREAM_CHUNK  
+    chunk: Optional[str] = None
+    chunk_index: Optional[int] = None
+    # For STREAM_COMPLETED
+    end_time: Optional[datetime] = None
+    duration_ms: Optional[float] = None
+    full_response: Optional[str] = None
+    response_length: Optional[int] = None
+    success: bool = True
+    error: Optional[str] = None
+
+
 # Message factory functions
 def create_connection_message(session_id: str) -> WebSocketMessage:
     """Create connection established message"""
@@ -170,4 +221,59 @@ def create_progress_message(progress_data: ProgressUpdateData, session_id: str) 
         message_id=f"progress_{datetime.now().timestamp()}",
         session_id=session_id,
         data=progress_data.model_dump()
+    )
+
+
+def create_summary_started_message(summary_data: SummaryEventData, session_id: str) -> WebSocketMessage:
+    """Create summary started message"""
+    return WebSocketMessage(
+        event_type=TraceEventType.SUMMARY_STARTED,
+        timestamp=datetime.now(),
+        message_id=f"summary_start_{summary_data.run_id[:8]}",
+        session_id=session_id,
+        data=summary_data.model_dump()
+    )
+
+
+def create_summary_completed_message(summary_data: SummaryEventData, session_id: str) -> WebSocketMessage:
+    """Create summary completed message"""
+    return WebSocketMessage(
+        event_type=TraceEventType.SUMMARY_COMPLETED,
+        timestamp=datetime.now(),
+        message_id=f"summary_end_{summary_data.run_id[:8]}",
+        session_id=session_id,
+        data=summary_data.model_dump()
+    )
+
+
+def create_stream_started_message(stream_data: StreamEventData, session_id: str) -> WebSocketMessage:
+    """Create stream started message"""
+    return WebSocketMessage(
+        event_type=TraceEventType.STREAM_STARTED,
+        timestamp=datetime.now(),
+        message_id=f"stream_start_{stream_data.stream_id[:8]}",
+        session_id=session_id,
+        data=stream_data.model_dump()
+    )
+
+
+def create_stream_chunk_message(stream_data: StreamEventData, session_id: str) -> WebSocketMessage:
+    """Create stream chunk message"""
+    return WebSocketMessage(
+        event_type=TraceEventType.STREAM_CHUNK,
+        timestamp=datetime.now(),
+        message_id=f"stream_chunk_{stream_data.stream_id[:8]}_{stream_data.chunk_index}",
+        session_id=session_id,
+        data=stream_data.model_dump()
+    )
+
+
+def create_stream_completed_message(stream_data: StreamEventData, session_id: str) -> WebSocketMessage:
+    """Create stream completed message"""
+    return WebSocketMessage(
+        event_type=TraceEventType.STREAM_COMPLETED,
+        timestamp=datetime.now(),
+        message_id=f"stream_end_{stream_data.stream_id[:8]}",
+        session_id=session_id,
+        data=stream_data.model_dump()
     )

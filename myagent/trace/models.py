@@ -25,6 +25,7 @@ class RunType(str, Enum):
     PREPROCESSING = "preprocessing"  # Data preprocessing
     POSTPROCESSING = "postprocessing"  # Data postprocessing
     CHAIN = "chain"              # Chain of operations
+    SUMMARY = "summary"          # Summary generation
     CUSTOM = "custom"            # Custom operation
 
 

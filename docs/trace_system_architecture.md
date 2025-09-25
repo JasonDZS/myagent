@@ -10,7 +10,8 @@ MyAgent框架的trace系统提供了完整的执行追踪和调试能力，采�
 Trace (执行会话)
 └── Agent Step (代理步骤)
     ├── Think (推理阶段)
-    └── Tool_1, Tool_2, ..., Tool_N (工具执行)
+    ├── Tool_1, Tool_2, ..., Tool_N (工具执行)
+    └── Summary (总结阶段) [可选]
 ```
 
 ### 核心设计原则
@@ -173,6 +174,47 @@ Trace (执行会话)
 - `outputs`: 工具的执行结果
 - `metadata`: 工具的描述和参数定义
 
+### 5. Summary Level (总结阶段)
+
+记录特殊工具执行后的自动总结生成过程。当代理执行完特殊工具（如`terminate`）后，系统会自动生成对话和任务执行的综合总结。
+
+```json
+{
+  "id": "summary-uuid",
+  "name": "final_summary_generation",
+  "run_type": "summary",
+  "parent_run_id": "step-uuid",  // 直接属于Step
+  "status": "success",
+  "start_time": "2025-09-24T12:00:05.100Z",
+  "end_time": "2025-09-24T12:00:06.200Z",
+  "inputs": {
+    "summary_prompt": "Please provide a comprehensive summary of the entire conversation...",
+    "conversation_messages": [...],  // 清理后的对话历史
+    "trigger": "special_tool_execution",
+    "special_tool_name": "terminate"
+  },
+  "outputs": {
+    "role": "assistant",
+    "content": "## Task Summary\n\n**Original Request**: 显示用户表的10条数据\n\n**Key Steps**:\n1. 检查数据库表结构\n2. 执行查询获取用户数据\n3. 返回查询结果\n\n**Results**: 成功获取并显示了用户表的10条记录...",
+    "summary_added_to_memory": true
+  },
+  "metadata": {
+    "summary_type": "automatic_final_summary",
+    "message_cleaning_applied": true,
+    "original_message_count": 15,
+    "cleaned_message_count": 12
+  },
+  "latency_ms": 1100.0
+}
+```
+
+**字段说明**:
+- `run_type`: 固定为"summary"
+- `parent_run_id`: 指向触发总结的Step run
+- `inputs`: 包含总结提示词和清理后的对话历史
+- `outputs`: 生成的总结内容（完整的助手Message对象）
+- `metadata`: 总结生成的元信息，包括消息清理统计
+
 ## 🔄 完整执行流程示例
 
 以MySQL查询任务为例，展示完整的trace结构：
@@ -201,9 +243,12 @@ Trace (执行会话)
     ├── 🧠 Think (think_step_3)  
     │   ├── Input: "Call mysql_query for data..."
     │   └── Output: "Task completed" + [terminate_call]
-    └── 🛠️ terminate (tool)
-        ├── Input: {"status": "success"}
-        └── Output: "Interaction completed"
+    ├── 🛠️ terminate (tool)
+    │   ├── Input: {"status": "success"}
+    │   └── Output: "Interaction completed"
+    └── 📝 final_summary_generation (summary)
+        ├── Input: summary_prompt + cleaned_messages
+        └── Output: "## Task Summary\n\n**Original Request**: 显示用户表的10条数据..."
 ```
 
 ## 📈 关键特性
@@ -225,12 +270,14 @@ Trace (执行会话)
 ```
 Step (代理步骤)
 ├── Think (推理阶段) - 直接子级
-└── Tool (工具执行) - 直接子级
+├── Tool (工具执行) - 直接子级
+└── Summary (总结阶段) - 直接子级 [可选]
 ```
 
-- Think和Tool都是Step的直接子级
+- Think、Tool和Summary都是Step的直接子级
 - 没有不必要的嵌套层次
 - 父子关系清晰明确
+- Summary仅在特殊工具执行后自动触发
 
 ### ✅ 完整信息保存
 
@@ -242,6 +289,11 @@ Step (代理步骤)
 - 输入：工具的实际执行参数
 - 输出：工具的执行结果
 - 元数据：工具的描述和参数定义
+
+**Summary阶段** [可选]:
+- 输入：总结提示词和清理后的对话历史
+- 输出：完整的总结Message对象（包含任务概览、关键步骤、结果等）
+- 元数据：总结类型、消息清理统计信息
 
 ## 🛠️ 使用场景
 
@@ -259,6 +311,14 @@ tool_runs = find_runs_by_type(trace_data, 'tool')
 for run in tool_runs:
     if run.get('status') == 'error':
         print(f"Tool error: {run['name']} - {run.get('error')}")
+
+# 查找总结生成问题
+summary_runs = find_runs_by_type(trace_data, 'summary')
+for run in summary_runs:
+    if run.get('status') == 'error':
+        print(f"Summary error: {run.get('error')}")
+    else:
+        print(f"Summary generated: {run['outputs']['content'][:100]}...")
 ```
 
 ### 2. 性能监控和分析
@@ -271,6 +331,12 @@ avg_think_time = sum(think_times) / len(think_times)
 # 分析工具执行时间
 tool_times = {run['name']: run['latency_ms'] for run in tool_runs}
 slowest_tool = max(tool_times, key=tool_times.get)
+
+# 分析总结生成时间
+summary_runs = find_runs_by_type(trace_data, 'summary')
+if summary_runs:
+    summary_time = summary_runs[0]['latency_ms']
+    print(f"Summary generation took: {summary_time}ms")
 ```
 
 ### 3. 行为模式分析
@@ -286,6 +352,15 @@ for run in tool_runs:
 for run in think_runs:
     tool_calls = run.get('outputs', {}).get('tool_calls', [])
     print(f"Step {run['name']}: {len(tool_calls)} tools called")
+
+# 分析总结质量和内容
+summary_runs = find_runs_by_type(trace_data, 'summary')
+for run in summary_runs:
+    summary_content = run.get('outputs', {}).get('content', '')
+    metadata = run.get('metadata', {})
+    print(f"Summary triggered by: {metadata.get('special_tool_name', 'unknown')}")
+    print(f"Message cleaning: {metadata.get('original_message_count', 0)} -> {metadata.get('cleaned_message_count', 0)}")
+    print(f"Summary length: {len(summary_content)} characters")
 ```
 
 ## 📝 最佳实践
@@ -300,8 +375,12 @@ agent = create_react_agent(
     enable_tracing=True  # 启用trace
 )
 
-# 执行并自动记录trace
+# 执行并自动记录trace（包括自动总结）
 result = await agent.run("用户请求")
+
+# 自动总结会在特殊工具（如terminate）执行后生成
+# 可以通过agent.final_response访问最终总结
+print(f"Final summary: {agent.final_response}")
 ```
 
 ### 2. 导出和分析Trace

@@ -3,6 +3,8 @@
 import asyncio
 import json
 import uuid
+import sys
+import os
 from typing import Dict, Set
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -13,15 +15,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
+# Add parent directory to path for myagent imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from myagent import create_react_agent
 from myagent.trace import TraceManager, TraceMetadata, get_trace_manager, set_trace_manager, RunType, RunStatus
 from myagent.tool.base_tool import BaseTool, ToolResult
 
 from websocket_trace_protocol import (
     TraceEventType, WebSocketMessage, TraceStartedData, TraceCompletedData,
-    RunEventData, StatusUpdateData, ProgressUpdateData,
+    RunEventData, StatusUpdateData, ProgressUpdateData, SummaryEventData,
     create_connection_message, create_trace_started_message, create_trace_completed_message,
-    create_run_event_message, create_status_message, create_progress_message
+    create_run_event_message, create_status_message, create_progress_message,
+    create_summary_started_message, create_summary_completed_message
 )
 
 # Import MySQL tools from the original example
@@ -300,8 +306,19 @@ class WebSocketTraceManager(TraceManager):
                 event_type = TraceEventType.THINK_COMPLETED
             elif run.run_type == RunType.TOOL:
                 event_type = TraceEventType.TOOL_COMPLETED
+            elif run.run_type == RunType.SUMMARY:
+                event_type = TraceEventType.SUMMARY_COMPLETED
             else:
                 event_type = TraceEventType.RUN_COMPLETED
+        elif run.status == RunStatus.RUNNING:
+            if run.run_type == RunType.THINK:
+                event_type = TraceEventType.THINK_STARTED
+            elif run.run_type == RunType.TOOL:
+                event_type = TraceEventType.TOOL_STARTED
+            elif run.run_type == RunType.SUMMARY:
+                event_type = TraceEventType.SUMMARY_STARTED
+            else:
+                event_type = TraceEventType.RUN_STARTED
         else:
             event_type = TraceEventType.RUN_UPDATED
         
@@ -393,8 +410,24 @@ async def get_index():
                 white-space: pre-wrap; 
                 border-left: 4px solid #28a745;
                 min-height: 50px;
+                line-height: 1.5;
             }
             .output-placeholder { color: #6c757d; font-style: italic; }
+            .typewriter-cursor { 
+                display: inline-block; 
+                background-color: #007bff; 
+                width: 2px; 
+                height: 1.2em; 
+                margin-left: 2px;
+                animation: blink 1s infinite;
+            }
+            @keyframes blink {
+                0%, 50% { opacity: 1; }
+                51%, 100% { opacity: 0; }
+            }
+            .typewriter-output {
+                color: #212529;
+            }
             button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
             button:hover { background: #0056b3; }
             button:disabled { background: #ccc; cursor: not-allowed; }
@@ -434,7 +467,10 @@ async def get_index():
             </div>
             
             <div class="final-output">
-                <h3>🎯 Final Output</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>🎯 Final Output</h3>
+                    <button id="skipTypingButton" style="display: none; background: #6c757d; padding: 5px 10px; font-size: 0.8em;" onclick="skipTypewriting()">⏩ Skip Typing</button>
+                </div>
                 <div class="output-content" id="finalOutput">
                     <span class="output-placeholder">The final agent response will appear here...</span>
                 </div>
@@ -446,31 +482,176 @@ async def get_index():
             let sessionId = 'session_' + Math.random().toString(36).substring(7);
             let eventCount = 0;
             let finalResponse = '';
+            let isTyping = false;
+            let typewriterTimeout = null;
+            let fullResponseText = '';
+            let isRealTimeStreaming = false;
+            let streamingContainer = null;
+            let currentStreamId = null;
+
+            function startRealTimeStreaming(data) {
+                console.log('Starting real-time streaming:', data);
+                isRealTimeStreaming = true;
+                currentStreamId = data.stream_id;
+                
+                const finalOutput = document.getElementById('finalOutput');
+                finalOutput.innerHTML = '';
+                finalOutput.className = 'output-content';
+                
+                // Create streaming container
+                streamingContainer = document.createElement('div');
+                streamingContainer.className = 'typewriter-output';
+                finalOutput.appendChild(streamingContainer);
+                
+                // Add blinking cursor
+                const cursor = document.createElement('span');
+                cursor.className = 'typewriter-cursor';
+                finalOutput.appendChild(cursor);
+                
+                // Show indicator
+                addTraceEvent('info', '⌨️ AI is Streaming...', `Real-time response from ${data.model}`);
+            }
+
+            function handleStreamingChunk(data) {
+                if (!isRealTimeStreaming || data.stream_id !== currentStreamId || !streamingContainer) {
+                    return;
+                }
+                
+                console.log('Received streaming chunk:', data.chunk);
+                
+                // Handle newlines and create appropriate elements
+                const chunk = data.chunk || '';
+                const parts = chunk.split('\\n');
+                
+                for (let i = 0; i < parts.length; i++) {
+                    if (i > 0) {
+                        // Add line break for newlines
+                        streamingContainer.appendChild(document.createElement('br'));
+                    }
+                    if (parts[i]) {
+                        // Add text content
+                        const textNode = document.createTextNode(parts[i]);
+                        streamingContainer.appendChild(textNode);
+                    }
+                }
+                
+                // Auto-scroll to show latest content
+                const finalOutput = document.getElementById('finalOutput');
+                finalOutput.scrollTop = finalOutput.scrollHeight;
+            }
+
+            function finishRealTimeStreaming(data) {
+                console.log('Finishing real-time streaming:', data);
+                isRealTimeStreaming = false;
+                currentStreamId = null;
+                
+                // Remove cursor after a short delay
+                const finalOutput = document.getElementById('finalOutput');
+                const cursor = finalOutput.querySelector('.typewriter-cursor');
+                if (cursor) {
+                    setTimeout(() => {
+                        cursor.remove();
+                    }, 1000);
+                }
+                
+                // Store final response
+                fullResponseText = data.full_response || '';
+                
+                // Update UI to show completion
+                if (data.success) {
+                    addTraceEvent('success', '✅ Streaming Complete', 
+                        `Final response received (${data.response_length || 0} characters)`);
+                } else {
+                    addTraceEvent('error', '❌ Streaming Error', 
+                        `Error: ${data.error || 'Unknown error'}`);
+                }
+                
+                // Re-enable start button
+                document.getElementById('startButton').disabled = false;
+                document.getElementById('startButton').textContent = '🚀 Start Agent';
+            }
+
+            function resetStreamingState() {
+                console.log('Resetting streaming state');
+                isRealTimeStreaming = false;
+                streamingContainer = null;
+                currentStreamId = null;
+                fullResponseText = '';
+            }
 
             function connect() {
                 const wsUrl = `ws://localhost:8234/ws/${sessionId}`;
+                console.log('Attempting WebSocket connection to:', wsUrl);
+                
+                // Update status to show connecting
+                document.getElementById('statusText').textContent = 'Connecting...';
+                document.getElementById('connectionStatus').style.background = '#fff3cd';
+                document.getElementById('connectionStatus').style.color = '#856404';
+                
                 ws = new WebSocket(wsUrl);
                 
                 ws.onopen = function(event) {
+                    console.log('WebSocket connection opened');
+                    
+                    // Clear connection timeout
+                    if (connectionTimeout) {
+                        clearTimeout(connectionTimeout);
+                        connectionTimeout = null;
+                    }
+                    
                     document.getElementById('statusText').textContent = 'Connected';
                     document.getElementById('connectionStatus').style.background = '#d4edda';
-                    addTraceEvent('info', 'WebSocket Connected', 'Connected to trace server');
+                    document.getElementById('connectionStatus').style.color = '#155724';
+                    
+                    // Clear the "Connecting..." message and show connected status
+                    const traceContent = document.getElementById('traceContent');
+                    if (traceContent.innerHTML.includes('Connecting to WebSocket server')) {
+                        traceContent.innerHTML = '';
+                        eventCount = 0;
+                        updateEventCount();
+                    }
+                    
+                    addTraceEvent('success', '🔗 WebSocket Connected', 'Connected to trace server - ready to monitor agent execution');
                 };
                 
                 ws.onmessage = function(event) {
-                    const message = JSON.parse(event.data);
-                    handleTraceMessage(message);
+                    try {
+                        const message = JSON.parse(event.data);
+                        console.log('Received WebSocket message:', message);
+                        handleTraceMessage(message);
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message:', error, event.data);
+                        addTraceEvent('error', '❌ Message Parse Error', 'Failed to parse incoming message');
+                    }
                 };
                 
                 ws.onclose = function(event) {
+                    console.log('WebSocket connection closed', event);
                     document.getElementById('statusText').textContent = 'Disconnected';
                     document.getElementById('connectionStatus').style.background = '#f8d7da';
-                    addTraceEvent('error', 'WebSocket Disconnected', 'Connection to server lost');
-                    setTimeout(connect, 3000); // Reconnect after 3 seconds
+                    document.getElementById('connectionStatus').style.color = '#721c24';
+                    
+                    if (event.wasClean) {
+                        addTraceEvent('info', '🔌 WebSocket Disconnected', 'Connection closed cleanly');
+                    } else {
+                        addTraceEvent('error', '❌ WebSocket Disconnected', 'Connection to server lost - attempting to reconnect...');
+                        // Only reconnect if it wasn't a clean disconnect
+                        setTimeout(() => {
+                            document.getElementById('statusText').textContent = 'Reconnecting...';
+                            document.getElementById('connectionStatus').style.background = '#fff3cd';
+                            document.getElementById('connectionStatus').style.color = '#856404';
+                            connect();
+                            setConnectionTimeout();
+                        }, 3000);
+                    }
                 };
                 
                 ws.onerror = function(error) {
-                    addTraceEvent('error', 'WebSocket Error', 'Connection error occurred');
+                    console.error('WebSocket error:', error);
+                    document.getElementById('statusText').textContent = 'Connection Error';
+                    document.getElementById('connectionStatus').style.background = '#f8d7da';
+                    document.getElementById('connectionStatus').style.color = '#721c24';
+                    addTraceEvent('error', '⚠️ WebSocket Error', 'Connection error occurred - check server status');
                 };
             }
 
@@ -494,14 +675,22 @@ async def get_index():
             function handleTraceMessage(message) {
                 const { event_type, timestamp, data } = message;
                 
+                // Clear connection timeout when we receive any message
+                if (connectionTimeout) {
+                    clearTimeout(connectionTimeout);
+                    connectionTimeout = null;
+                }
+                
                 switch(event_type) {
                     case 'connection_established':
-                        addTraceEvent('success', '🔗 Connection Established', 'WebSocket connection ready');
+                        console.log('Received connection_established event');
+                        addTraceEvent('success', '🔗 Connection Established', 'WebSocket connection ready for agent execution');
                         break;
                     
                     case 'trace_started':
-                        // Clear previous results
+                        // Clear previous results and reset streaming state
                         clearFinalOutput();
+                        resetStreamingState();
                         addTraceEvent('info', '🚀 Trace Started', 
                             `Agent: ${data.agent_name}<br>Request: ${data.request}<br>Max Steps: ${data.max_steps}`);
                         break;
@@ -510,11 +699,23 @@ async def get_index():
                         addTraceEvent('success', '✅ Trace Completed', 
                             `Duration: ${data.duration_ms?.toFixed(2)}ms<br>Total Runs: ${data.total_runs}<br>Status: ${data.status}`);
                         
-                        // Show final response from TraceCompletedData
-                        if (data.final_response) {
-                            showFinalOutput(data.final_response);
+                        // Only show typewriter effect if real-time streaming didn't happen
+                        if (!isRealTimeStreaming && !streamingContainer) {
+                            // Show final response with typewriter effect (fallback for non-streaming)
+                            if (data.final_response) {
+                                showFinalOutputWithTypewriter(data.final_response);
+                            } else {
+                                showFinalOutputWithTypewriter('Trace completed but no final response available');
+                            }
                         } else {
-                            showFinalOutput('Trace completed but no final response available');
+                            // If streaming already happened, just store the final response
+                            fullResponseText = data.final_response || fullResponseText;
+                            
+                            // Show completion message if final output is empty
+                            const finalOutput = document.getElementById('finalOutput');
+                            if (!finalOutput.textContent.trim() || finalOutput.innerHTML.includes('output-placeholder')) {
+                                showFinalOutput(data.final_response || 'Trace completed but no final response available');
+                            }
                         }
                         
                         document.getElementById('startButton').disabled = false;
@@ -542,6 +743,37 @@ async def get_index():
                         const toolOutput = data.outputs?.result || data.outputs?.output || 'No output';
                         addTraceEvent('success', `🔧 Tool: ${data.name}`, 
                             `Duration: ${data.duration_ms?.toFixed(2)}ms<br>Inputs: ${toolInputs}<br>Result: ${toolOutput.substring(0, 200)}...`);
+                        break;
+                    
+                    case 'summary_started':
+                        addTraceEvent('info', '📝 Summary Generation Started', 
+                            `Triggered by: ${data.special_tool_name || 'Unknown'}<br>Message cleaning: ${data.original_message_count} → ${data.cleaned_message_count} messages`);
+                        break;
+                    
+                    case 'summary_completed':
+                        const summaryLength = data.summary_length || (data.summary_content?.length || 0);
+                        addTraceEvent('success', '✨ Summary Generation Completed', 
+                            `Duration: ${data.duration_ms?.toFixed(2)}ms<br>Summary length: ${summaryLength} characters<br>Success: ${data.success ? 'Yes' : 'No'}`);
+                        break;
+                    
+                    case 'stream_started':
+                        // Clear previous final output and prepare for real-time streaming
+                        clearFinalOutput();
+                        startRealTimeStreaming(data);
+                        addTraceEvent('info', '🚀 Real-time Streaming Started', 
+                            `Model: ${data.model}<br>Method: ${data.method}<br>Stream ID: ${data.stream_id}`);
+                        break;
+                    
+                    case 'stream_chunk':
+                        // Handle real-time chunk streaming
+                        handleStreamingChunk(data);
+                        break;
+                    
+                    case 'stream_completed':
+                        // Finalize streaming display
+                        finishRealTimeStreaming(data);
+                        addTraceEvent('success', '✅ Real-time Streaming Completed', 
+                            `Duration: ${data.duration_ms?.toFixed(2)}ms<br>Response length: ${data.response_length} chars<br>Success: ${data.success ? 'Yes' : 'No'}`);
                         break;
                     
                     case 'run_error':
@@ -582,7 +814,111 @@ async def get_index():
                 finalOutput.className = 'output-content';
             }
 
+            function showFinalOutputWithTypewriter(response) {
+                const finalOutput = document.getElementById('finalOutput');
+                const skipButton = document.getElementById('skipTypingButton');
+                const text = response || 'No response received';
+                
+                // Store full response for skip functionality
+                fullResponseText = text;
+                isTyping = true;
+                
+                // Show skip button
+                skipButton.style.display = 'inline-block';
+                
+                // Clear current content and show cursor
+                finalOutput.innerHTML = '<span class="typewriter-cursor"></span>';
+                finalOutput.className = 'output-content';
+                
+                // Create container for typed text
+                const textContainer = document.createElement('div');
+                textContainer.className = 'typewriter-output';
+                finalOutput.insertBefore(textContainer, finalOutput.firstChild);
+                
+                let currentIndex = 0;
+                const typeSpeed = 25; // milliseconds per character
+                const pauseAfterPunctuation = 150; // extra pause after . ! ?
+                const pauseAfterNewline = 300; // extra pause after newlines
+                
+                function typeNextCharacter() {
+                    // Check if typing was cancelled
+                    if (!isTyping) {
+                        return;
+                    }
+                    
+                    if (currentIndex < text.length) {
+                        const char = text[currentIndex];
+                        
+                        // Handle newlines by creating line breaks
+                        if (char === '\\n') {
+                            textContainer.appendChild(document.createElement('br'));
+                        } else {
+                            // Create a text node and add it
+                            const textNode = document.createTextNode(char);
+                            textContainer.appendChild(textNode);
+                        }
+                        
+                        currentIndex++;
+                        
+                        // Variable typing speed based on character
+                        let delay = typeSpeed;
+                        if (char === '.' || char === '!' || char === '?') {
+                            delay += pauseAfterPunctuation;
+                        } else if (char === '\\n') {
+                            delay += pauseAfterNewline;
+                        }
+                        
+                        // Scroll to show the latest text
+                        finalOutput.scrollTop = finalOutput.scrollHeight;
+                        
+                        typewriterTimeout = setTimeout(typeNextCharacter, delay);
+                    } else {
+                        // Typing completed
+                        isTyping = false;
+                        skipButton.style.display = 'none';
+                        
+                        // Remove cursor when typing is complete
+                        const cursor = finalOutput.querySelector('.typewriter-cursor');
+                        if (cursor) {
+                            setTimeout(() => cursor.remove(), 1000); // Keep cursor for 1 second after completion
+                        }
+                    }
+                }
+                
+                // Start typing with a small delay and show "typing..." indicator
+                addTraceEvent('info', '⌨️ Generating Response', 'AI is typing the final response...');
+                typewriterTimeout = setTimeout(typeNextCharacter, 500);
+            }
+
+            function skipTypewriting() {
+                if (isTyping) {
+                    // Cancel current typing
+                    isTyping = false;
+                    if (typewriterTimeout) {
+                        clearTimeout(typewriterTimeout);
+                    }
+                    
+                    // Show full response immediately
+                    const finalOutput = document.getElementById('finalOutput');
+                    finalOutput.innerHTML = fullResponseText || 'No response received';
+                    finalOutput.className = 'output-content';
+                    
+                    // Hide skip button
+                    document.getElementById('skipTypingButton').style.display = 'none';
+                }
+            }
+
             function clearFinalOutput() {
+                // Reset typing state
+                isTyping = false;
+                if (typewriterTimeout) {
+                    clearTimeout(typewriterTimeout);
+                }
+                document.getElementById('skipTypingButton').style.display = 'none';
+                
+                // Reset streaming state
+                resetStreamingState();
+                
                 const finalOutput = document.getElementById('finalOutput');
                 finalOutput.innerHTML = '<span class="output-placeholder">The final agent response will appear here...</span>';
                 finalOutput.className = 'output-content';
@@ -622,8 +958,26 @@ async def get_index():
                 clearFinalOutput();
             }
 
+            // Connection timeout handling
+            let connectionTimeout = null;
+            
+            function setConnectionTimeout() {
+                if (connectionTimeout) {
+                    clearTimeout(connectionTimeout);
+                }
+                connectionTimeout = setTimeout(() => {
+                    if (!ws || ws.readyState !== WebSocket.OPEN) {
+                        document.getElementById('statusText').textContent = 'Connection Timeout';
+                        document.getElementById('connectionStatus').style.background = '#f8d7da';
+                        document.getElementById('connectionStatus').style.color = '#721c24';
+                        addTraceEvent('error', '⏰ Connection Timeout', 'Failed to connect to WebSocket server within 10 seconds. Please check if the server is running.');
+                    }
+                }, 10000); // 10 second timeout
+            }
+            
             // Connect on page load
             connect();
+            setConnectionTimeout();
         </script>
     </body>
     </html>

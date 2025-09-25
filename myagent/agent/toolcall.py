@@ -8,9 +8,15 @@ from pydantic import Field
 from .react import ReActAgent
 from ..exceptions import TokenLimitExceeded
 from ..logger import logger
-from ..prompt.toolcall import NEXT_STEP_PROMPT, SYSTEM_PROMPT
+from ..prompt.toolcall import NEXT_STEP_PROMPT, SYSTEM_PROMPT, SUMMARY_PROMPT
 from ..schema import TOOL_CHOICE_TYPE, AgentState, Message, ToolCall, ToolChoice
 from ..tool import ToolCollection, Terminate
+
+try:
+    from ..trace import get_trace_manager
+    TRACE_AVAILABLE = True
+except ImportError:
+    TRACE_AVAILABLE = False
 
 
 TOOL_CALL_REQUIRED = "Tool calls required but none provided"
@@ -233,6 +239,9 @@ class ToolCallAgent(ReActAgent):
             return
 
         if self._should_finish_execution(name=name, result=result, **kwargs):
+            # Generate summary before finishing
+            await self._generate_final_summary()
+            
             # Set agent state to finished
             logger.info(f"🏁 Special tool '{name}' has completed the task!")
             self.state = AgentState.FINISHED
@@ -245,6 +254,144 @@ class ToolCallAgent(ReActAgent):
     def _is_special_tool(self, name: str) -> bool:
         """Check if tool name is in special tools list"""
         return name.lower() in [n.lower() for n in self.special_tool_names]
+
+    async def _generate_final_summary(self):
+        """Generate a final summary of the conversation and task execution"""
+        try:
+            # Add user message to prompt for summary generation
+            summary_user_msg = Message.user_message(SUMMARY_PROMPT)
+            self.memory.add_message(summary_user_msg)
+            
+            logger.info("📝 Generating final summary of the conversation...")
+            
+            # Clean messages to ensure valid tool_calls sequence for LLM API
+            clean_messages = self._get_clean_messages_for_summary()
+            
+            # Check if we have WebSocket streaming capabilities
+            websocket_manager = None
+            session_id = None
+            stream_context = None
+            
+            # Try to get WebSocket manager from trace manager
+            if TRACE_AVAILABLE:
+                try:
+                    trace_manager = get_trace_manager()
+                    if hasattr(trace_manager, 'connection_manager') and hasattr(trace_manager, 'current_session_id'):
+                        websocket_manager = trace_manager.connection_manager
+                        session_id = trace_manager.current_session_id
+                        
+                        # Get current trace context for streaming
+                        current_trace = getattr(trace_manager, '_current_trace', None)
+                        current_run = getattr(trace_manager, '_current_run', None)
+                        if current_trace and current_run:
+                            stream_context = {
+                                "trace_id": current_trace.trace_id,
+                                "run_id": current_run.run_id,
+                                "parent_run_id": current_run.parent_run_id
+                            }
+                except Exception as e:
+                    logger.debug(f"Could not get WebSocket manager: {e}")
+            
+            # Get summary from LLM using streaming if available, otherwise fallback to regular ask
+            if websocket_manager and session_id and hasattr(self.llm, 'ask_with_streaming'):
+                logger.info("🌊 Using real-time streaming for summary generation")
+                response = await self.llm.ask_with_streaming(
+                    messages=clean_messages,
+                    system_msgs=(
+                        [Message.system_message(self.system_prompt)]
+                        if self.system_prompt
+                        else None
+                    ),
+                    websocket_manager=websocket_manager,
+                    session_id=session_id,
+                    stream_context=stream_context
+                )
+            else:
+                logger.info("📝 Using regular LLM call for summary generation")
+                response = await self.llm.ask(
+                    messages=clean_messages,
+                    system_msgs=(
+                        [Message.system_message(self.system_prompt)]
+                        if self.system_prompt
+                        else None
+                    )
+                )
+            
+            # Handle different response formats
+            summary_content = None
+            if response:
+                if isinstance(response, str):
+                    # Response is a direct string
+                    summary_content = response
+                elif hasattr(response, 'content') and response.content:
+                    # Response is an object with content attribute
+                    summary_content = response.content
+                else:
+                    logger.warning("⚠️ Response received but no content found")
+            
+            if summary_content:
+                # Add the summary as assistant message
+                summary_msg = Message.assistant_message(summary_content)
+                self.memory.add_message(summary_msg)
+                logger.info(f"✨ Final summary generated: {summary_content[:200]}...")
+                
+                # Store the summary as final response
+                self.final_response = summary_content
+            else:
+                logger.warning("⚠️ Failed to generate summary - no response from LLM")
+                
+        except Exception as e:
+            logger.error(f"🚨 Error generating final summary: {e}")
+            # Don't fail the entire process if summary generation fails
+            pass
+
+    def _get_clean_messages_for_summary(self):
+        """Get cleaned messages ensuring valid tool_calls sequence for summary generation.
+        
+        This removes any incomplete tool_calls sequences that could cause API errors.
+        """
+        messages = self.memory.messages[:]  # Copy the messages
+        clean_messages = []
+        
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            
+            # If this is an assistant message with tool_calls
+            if msg.role == "assistant" and msg.tool_calls:
+                tool_call_ids = {tc.id for tc in msg.tool_calls}
+                
+                # Look ahead to find corresponding tool messages
+                j = i + 1
+                found_tool_responses = set()
+                
+                while j < len(messages) and messages[j].role == "tool":
+                    if messages[j].tool_call_id in tool_call_ids:
+                        found_tool_responses.add(messages[j].tool_call_id)
+                    j += 1
+                
+                # If all tool_calls have responses, include the sequence
+                if found_tool_responses == tool_call_ids:
+                    # Add the assistant message and all its tool responses
+                    clean_messages.append(msg)
+                    for k in range(i + 1, j):
+                        if messages[k].role == "tool" and messages[k].tool_call_id in tool_call_ids:
+                            clean_messages.append(messages[k])
+                    i = j
+                else:
+                    # Skip incomplete tool_calls sequence - convert to plain assistant message
+                    clean_msg = Message.assistant_message(msg.content or "")
+                    clean_messages.append(clean_msg)
+                    i += 1
+            else:
+                # For non-tool_calls messages, add as-is (except tool messages without corresponding assistant)
+                if msg.role != "tool" or any(prev_msg.role == "assistant" and prev_msg.tool_calls 
+                                           and any(tc.id == msg.tool_call_id for tc in prev_msg.tool_calls)
+                                           for prev_msg in clean_messages):
+                    clean_messages.append(msg)
+                i += 1
+        
+        return clean_messages
 
     async def cleanup(self):
         """Clean up resources used by the agent's tools."""
