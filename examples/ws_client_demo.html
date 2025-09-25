@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyAgent WebSocket 客户端演示</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.connecting {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .chat-container {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 20px;
+            background-color: #f8f9fa;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            border-radius: 6px;
+        }
+        .message.user {
+            background-color: #007bff;
+            color: white;
+            margin-left: 20%;
+        }
+        .message.agent {
+            background-color: #28a745;
+            color: white;
+            margin-right: 20%;
+        }
+        .message.system {
+            background-color: #6c757d;
+            color: white;
+            font-size: 0.9em;
+            text-align: center;
+        }
+        .message.thinking {
+            background-color: #ffc107;
+            color: #212529;
+            font-style: italic;
+            margin-right: 20%;
+        }
+        .message.tool {
+            background-color: #17a2b8;
+            color: white;
+            margin-right: 20%;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        .input-container input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        .input-container button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .input-container button:hover {
+            background-color: #0056b3;
+        }
+        .input-container button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .config {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .config label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .config input[type="text"] {
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .examples {
+            margin-top: 20px;
+        }
+        .example-btn {
+            margin: 5px;
+            padding: 5px 10px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+        .example-btn:hover {
+            background-color: #e9ecef;
+        }
+        .timestamp {
+            font-size: 0.8em;
+            opacity: 0.7;
+            float: right;
+        }
+    </style>
+</head>
+<body>
+    <h1>🤖 MyAgent WebSocket 客户端演示</h1>
+    
+    <div class="container">
+        <h3>连接配置</h3>
+        <div class="config">
+            <label>
+                服务地址:
+                <input type="text" id="wsUrl" value="ws://localhost:8080" style="width: 200px;">
+            </label>
+            <button id="connectBtn" onclick="toggleConnection()">连接</button>
+            <button id="clearBtn" onclick="clearChat()">清空对话</button>
+        </div>
+        <div id="status" class="status disconnected">未连接</div>
+    </div>
+
+    <div class="container">
+        <h3>对话界面</h3>
+        <div id="chatContainer" class="chat-container"></div>
+        <div class="input-container">
+            <input type="text" id="messageInput" placeholder="输入您的消息..." disabled onkeypress="handleKeyPress(event)">
+            <button id="sendBtn" onclick="sendMessage()" disabled>发送</button>
+        </div>
+        
+        <div class="examples">
+            <h4>示例问题 (点击快速发送):</h4>
+            <button class="example-btn" onclick="sendExampleMessage('你好！')">你好！</button>
+            <button class="example-btn" onclick="sendExampleMessage('北京今天天气怎么样？')">查询天气</button>
+            <button class="example-btn" onclick="sendExampleMessage('告诉我上海的基本信息')">城市信息</button>
+            <button class="example-btn" onclick="sendExampleMessage('帮我介绍一下深圳这个城市')">介绍深圳</button>
+            <button class="example-btn" onclick="sendExampleMessage('广州的天气如何？')">广州天气</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h3>使用说明</h3>
+        <ol>
+            <li>确保 MyAgent WebSocket 服务正在运行：<code>myagent-ws server examples/ws_weather_agent.py</code></li>
+            <li>点击"连接"按钮连接到服务器</li>
+            <li>连接成功后会自动创建会话</li>
+            <li>输入消息或点击示例问题开始对话</li>
+            <li>观察 Agent 的思考过程和工具调用</li>
+        </ol>
+    </div>
+
+    <script>
+        let ws = null;
+        let sessionId = null;
+        let isConnected = false;
+
+        function updateStatus(message, type = 'disconnected') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        function addMessage(content, type = 'system', metadata = null) {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${type}`;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            let messageContent = content;
+            
+            if (metadata) {
+                if (metadata.tool) {
+                    messageContent = `🔧 ${metadata.tool}: ${content}`;
+                }
+                if (metadata.step) {
+                    messageContent = `💭 步骤 ${metadata.step}: ${content}`;
+                }
+            }
+            
+            messageEl.innerHTML = `
+                <div>${messageContent}</div>
+                <span class="timestamp">${timestamp}</span>
+            `;
+            
+            chatContainer.appendChild(messageEl);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function toggleConnection() {
+            if (!isConnected) {
+                connect();
+            } else {
+                disconnect();
+            }
+        }
+
+        function connect() {
+            const wsUrl = document.getElementById('wsUrl').value;
+            updateStatus('正在连接...', 'connecting');
+            
+            try {
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    isConnected = true;
+                    updateStatus('已连接', 'connected');
+                    document.getElementById('connectBtn').textContent = '断开';
+                    document.getElementById('messageInput').disabled = false;
+                    document.getElementById('sendBtn').disabled = false;
+                    
+                    addMessage('WebSocket 连接已建立', 'system');
+                    
+                    // 自动创建会话
+                    createSession();
+                };
+                
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                };
+                
+                ws.onclose = () => {
+                    isConnected = false;
+                    sessionId = null;
+                    updateStatus('连接已断开', 'disconnected');
+                    document.getElementById('connectBtn').textContent = '连接';
+                    document.getElementById('messageInput').disabled = true;
+                    document.getElementById('sendBtn').disabled = true;
+                    
+                    addMessage('WebSocket 连接已断开', 'system');
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket 错误:', error);
+                    addMessage('连接出错，请检查服务器是否启动', 'system');
+                };
+                
+            } catch (error) {
+                updateStatus('连接失败', 'disconnected');
+                addMessage(`连接失败: ${error.message}`, 'system');
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+        }
+
+        function createSession() {
+            const message = {
+                event: 'user.create_session',
+                timestamp: new Date().toISOString()
+            };
+            
+            ws.send(JSON.stringify(message));
+        }
+
+        function handleMessage(data) {
+            console.log('收到消息:', data);
+            
+            switch (data.event) {
+                case 'system.connected':
+                    addMessage(`连接成功 (ID: ${data.metadata?.connection_id?.slice(-8)})`, 'system');
+                    break;
+                    
+                case 'agent.session_created':
+                    sessionId = data.session_id;
+                    addMessage(`会话创建成功 (ID: ${sessionId.slice(-8)})`, 'system');
+                    addMessage('您可以开始对话了！', 'system');
+                    break;
+                    
+                case 'agent.thinking':
+                    addMessage(data.content, 'thinking', data.metadata);
+                    break;
+                    
+                case 'agent.tool_call':
+                    const toolInfo = `调用工具: ${data.metadata?.tool}`;
+                    addMessage(toolInfo, 'tool', data.metadata);
+                    break;
+                    
+                case 'agent.tool_result':
+                    const resultInfo = `工具结果: ${data.content}`;
+                    addMessage(resultInfo, 'tool', data.metadata);
+                    break;
+                    
+                case 'agent.partial_answer':
+                    addMessage(data.content, 'agent');
+                    break;
+                    
+                case 'agent.final_answer':
+                    addMessage(data.content, 'agent');
+                    break;
+                    
+                case 'agent.error':
+                    addMessage(`❌ 错误: ${data.content}`, 'system');
+                    break;
+                    
+                case 'system.heartbeat':
+                    // 心跳消息，不显示
+                    break;
+                    
+                default:
+                    addMessage(`${data.event}: ${data.content || JSON.stringify(data)}`, 'system');
+            }
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || !sessionId) {
+                return;
+            }
+            
+            addMessage(message, 'user');
+            
+            const wsMessage = {
+                event: 'user.message',
+                session_id: sessionId,
+                content: message,
+                timestamp: new Date().toISOString()
+            };
+            
+            ws.send(JSON.stringify(wsMessage));
+            input.value = '';
+        }
+
+        function sendExampleMessage(message) {
+            if (!isConnected || !sessionId) {
+                alert('请先连接到服务器');
+                return;
+            }
+            
+            document.getElementById('messageInput').value = message;
+            sendMessage();
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        function clearChat() {
+            document.getElementById('chatContainer').innerHTML = '';
+        }
+
+        // 页面加载时的初始化
+        window.onload = function() {
+            addMessage('欢迎使用 MyAgent WebSocket 客户端！', 'system');
+            addMessage('请确保服务器正在运行，然后点击连接按钮。', 'system');
+        };
+    </script>
+</body>
+</html>

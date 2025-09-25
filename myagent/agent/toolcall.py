@@ -267,49 +267,24 @@ class ToolCallAgent(ReActAgent):
             clean_messages = self._get_clean_messages_for_summary()
             
             # Check if we have WebSocket streaming capabilities
-            session_id = None
-            stream_context = None
+            ws_session = None
             
-            # Try to get WebSocket manager from trace manager
+            # Try to get WebSocket session from trace manager
             if TRACE_AVAILABLE:
                 try:
                     trace_manager = get_trace_manager()
-                    if hasattr(trace_manager, 'connection_manager') and hasattr(trace_manager, 'current_session_id'):
-                        session_id = trace_manager.current_session_id
-                        
-                        # Get current trace context for streaming
-                        current_trace = getattr(trace_manager, '_current_trace', None)
-                        current_run = getattr(trace_manager, '_current_run', None)
-                        if current_trace and current_run:
-                            stream_context = {
-                                "trace_id": current_trace.trace_id,
-                                "run_id": current_run.run_id,
-                                "parent_run_id": current_run.parent_run_id
-                            }
+                    if hasattr(trace_manager, 'ws_session'):
+                        ws_session = trace_manager.ws_session
                 except Exception as e:
-                    logger.debug(f"Could not get WebSocket manager: {e}")
+                    logger.debug(f"Could not get WebSocket session: {e}")
             
-            logger.info("📝 Using regular LLM call for summary generation")
-            response = await self.llm.ask(
-                messages=clean_messages,
-                system_msgs=(
-                    [Message.system_message(self.system_prompt)]
-                    if self.system_prompt
-                    else None
-                )
-            )
-            
-            # Handle different response formats
-            summary_content = None
-            if response:
-                if isinstance(response, str):
-                    # Response is a direct string
-                    summary_content = response
-                elif hasattr(response, 'content') and response.content:
-                    # Response is an object with content attribute
-                    summary_content = response.content
-                else:
-                    logger.warning("⚠️ Response received but no content found")
+            # Use streaming if WebSocket session is available
+            if ws_session:
+                logger.info("📡 Using WebSocket streaming for summary generation")
+                summary_content = await self._generate_streaming_summary(clean_messages, ws_session)
+            else:
+                logger.info("📝 Using regular LLM call for summary generation")
+                summary_content = await self._generate_regular_summary(clean_messages)
             
             if summary_content:
                 # Add the summary as assistant message
@@ -374,6 +349,172 @@ class ToolCallAgent(ReActAgent):
                 i += 1
         
         return clean_messages
+    
+    async def _generate_regular_summary(self, clean_messages):
+        """Generate summary using regular LLM call without streaming."""
+        response = await self.llm.ask(
+            messages=clean_messages,
+            system_msgs=(
+                [Message.system_message(self.system_prompt)]
+                if self.system_prompt
+                else None
+            ),
+            stream=False  # Explicitly disable streaming for regular call
+        )
+        
+        # Handle different response formats
+        if response:
+            if isinstance(response, str):
+                return response
+            elif hasattr(response, 'content') and response.content:
+                return response.content
+        return None
+    
+    async def _generate_streaming_summary(self, clean_messages, ws_session):
+        """Generate summary with WebSocket streaming support."""
+        try:
+            from ..ws.events import create_event, AgentEvents
+            
+            # Send thinking event
+            await ws_session._send_event(create_event(
+                AgentEvents.THINKING,
+                session_id=ws_session.session_id,
+                content="正在生成最终总结...",
+                metadata={"streaming": True}
+            ))
+            
+            # Create a custom streaming LLM call
+            summary_content = await self._stream_llm_with_websocket(
+                clean_messages, ws_session
+            )
+            
+            return summary_content
+            
+        except Exception as e:
+            logger.error(f"Error in streaming summary generation: {e}")
+            # Fallback to regular summary
+            return await self._generate_regular_summary(clean_messages)
+    
+    async def _stream_llm_with_websocket(self, clean_messages, ws_session):
+        """Stream LLM response via WebSocket with partial_answer events."""
+        try:
+            from ..ws.events import create_event, AgentEvents
+            
+            # Check if the model supports images
+            supports_images = self.llm.model in ["gpt-4-vision-preview", "gpt-4o", "gpt-4o-mini", "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"]
+            
+            # Format messages
+            system_msgs = [Message.system_message(self.system_prompt)] if self.system_prompt else None
+            if system_msgs:
+                formatted_system = self.llm.format_messages(system_msgs, supports_images)
+                formatted_messages = formatted_system + self.llm.format_messages(clean_messages, supports_images)
+            else:
+                formatted_messages = self.llm.format_messages(clean_messages, supports_images)
+            
+            # Calculate input token count and check limits
+            input_tokens = self.llm.count_message_tokens(formatted_messages)
+            if not self.llm.check_token_limit(input_tokens):
+                error_message = self.llm.get_limit_error_message(input_tokens)
+                raise TokenLimitExceeded(error_message)
+            
+            # Set up streaming parameters
+            params = {
+                "model": self.llm.model,
+                "messages": formatted_messages,
+                "stream": True,
+            }
+            
+            # Add model-specific parameters
+            if self.llm.model in ["o1", "o3-mini", "Qwen/Qwen3-32B"]:
+                params["max_completion_tokens"] = self.llm.max_tokens
+            else:
+                params["max_tokens"] = self.llm.max_tokens
+                params["temperature"] = self.llm.temperature
+            
+            # Update token count for streaming
+            self.llm.update_token_count(input_tokens)
+            
+            # Start streaming
+            response = await self.llm.client.chat.completions.create(**params)
+            
+            collected_content = []
+            chunk_buffer = ""
+            word_count = 0
+            
+            async for chunk in response:
+                chunk_content = chunk.choices[0].delta.content or ""
+                if not chunk_content:
+                    continue
+                    
+                collected_content.append(chunk_content)
+                chunk_buffer += chunk_content
+                
+                # Send partial answer every few words or when we hit sentence boundaries
+                if (" " in chunk_content or "。" in chunk_content or "." in chunk_content or 
+                    "\n" in chunk_content or len(chunk_buffer) > 50):
+                    
+                    word_count += len(chunk_buffer.split())
+                    
+                    # Send partial answer event
+                    await ws_session._send_event(create_event(
+                        AgentEvents.PARTIAL_ANSWER,
+                        session_id=ws_session.session_id,
+                        content=chunk_buffer,
+                        metadata={
+                            "is_streaming": True,
+                            "word_count": word_count,
+                            "is_final": False
+                        }
+                    ))
+                    
+                    chunk_buffer = ""
+            
+            # Send any remaining content
+            if chunk_buffer:
+                await ws_session._send_event(create_event(
+                    AgentEvents.PARTIAL_ANSWER,
+                    session_id=ws_session.session_id,
+                    content=chunk_buffer,
+                    metadata={
+                        "is_streaming": True,
+                        "word_count": word_count + len(chunk_buffer.split()),
+                        "is_final": False
+                    }
+                ))
+            
+            full_response = "".join(collected_content).strip()
+            if not full_response:
+                raise ValueError("Empty response from streaming LLM")
+            
+            # Send final partial answer to mark completion
+            await ws_session._send_event(create_event(
+                AgentEvents.PARTIAL_ANSWER,
+                session_id=ws_session.session_id,
+                content="",
+                metadata={
+                    "is_streaming": True,
+                    "is_final": True,
+                    "total_length": len(full_response)
+                }
+            ))
+            
+            # Estimate completion tokens
+            completion_tokens = self.llm.count_tokens(full_response)
+            self.llm.total_completion_tokens += completion_tokens
+            
+            logger.info(f"✅ Streaming summary completed: {len(full_response)} characters")
+            
+            return full_response
+            
+        except Exception as e:
+            logger.error(f"Error in WebSocket streaming: {e}")
+            # Send error event
+            await ws_session._send_event(create_event(
+                AgentEvents.ERROR,
+                session_id=ws_session.session_id,
+                content=f"流式生成出错: {str(e)}"
+            ))
+            raise
 
     async def cleanup(self):
         """Clean up resources used by the agent's tools."""

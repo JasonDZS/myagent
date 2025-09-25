@@ -1,0 +1,11 @@
+# MyAgent WebSocket 服务器依赖
+websockets>=11.0.0
+pydantic>=2.5.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+tiktoken>=0.7.0
+tenacity>=8.2.0
+loguru>=0.7.0
+
+# 可选依赖
+aiohttp>=3.8.0  # 用于健康检查 HTTP 端点

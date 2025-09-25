@@ -38,6 +38,8 @@ class TraceManager:
         self.storage = storage or InMemoryTraceStorage()
         self.auto_save = auto_save
         self._active_traces: Dict[str, Trace] = {}
+        # WebSocket session for streaming support
+        self.ws_session = None
     
     @asynccontextmanager
     async def trace(
