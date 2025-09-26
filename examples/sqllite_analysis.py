@@ -44,6 +44,9 @@ REQUIRED_SQLITE_ENV_VARS = (
     "SQLITE_DATABASE",
 )
 
+class ToolResultExpanded(ToolResult):
+    data: Any | None = None  # Additional structured data, e.g. for visualizations
+
 
 @dataclass
 class DatabaseConfig:
@@ -430,7 +433,7 @@ class DataVisualTool(BaseTool):
         "required": ["sql", "chart_type", "y_fields"],
     }
 
-    async def execute(self, sql: str, chart_type: str, y_fields: list[str], x_field: str | None = None, title: str | None = None) -> ToolResult:
+    async def execute(self, sql: str, chart_type: str, y_fields: list[str], x_field: str | None = None, title: str | None = None) -> ToolResultExpanded:
         stripped_sql = sql.strip().rstrip(";")
         lowered = stripped_sql.lstrip().lower()
         
@@ -443,11 +446,11 @@ class DataVisualTool(BaseTool):
             allowed_prefixes = ("select", "with")
             
         if not lowered.startswith(allowed_prefixes):
-            return ToolResult(error="Only SELECT or WITH statements are allowed for visualization.")
+            return ToolResultExpanded(error="Only SELECT or WITH statements are allowed for visualization.")
 
         read_only_error = _ensure_read_only(stripped_sql)
         if read_only_error:
-            return ToolResult(error=read_only_error)
+            return ToolResultExpanded(error=read_only_error)
 
         try:
             import matplotlib
@@ -544,16 +547,20 @@ class DataVisualTool(BaseTool):
                 plt.savefig(filepath, dpi=300, bbox_inches='tight')
                 plt.close()
                 
-                return f"Visualization created successfully. Chart saved to: {filepath}\nData rows: {len(df)}, Chart type: {chart_type}"
+                return (
+                    f"Visualization created successfully. Chart saved to: {filepath}\nData rows: {len(df)}, Chart type: {chart_type}",
+                    df.to_dict(orient='records')
+                )
 
         try:
-            result = await asyncio.to_thread(_get_data_and_visualize)
-            return ToolResult(
+            result, df_records = await asyncio.to_thread(_get_data_and_visualize)
+            return ToolResultExpanded(
                 output=result,
+                data=df_records,
                 system=f"Data visualization completed: {chart_type} chart with {len(y_fields)} y-field(s)",
             )
         except Exception as e:
-            return ToolResult(error=f"Visualization failed: {e}")
+            return ToolResultExpanded(error=f"Visualization failed: {e}")
 
 
 schema_tool = DatabaseSchemaTool()

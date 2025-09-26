@@ -220,21 +220,7 @@ class ToolCallAgent(ReActAgent):
         )
         try:
             # Parse arguments
-            try:
-                args = json.loads(command.function.arguments or "{}")
-            except Exception as e:
-                logger.error(e)
-                text = command.function.arguments
-                pattern = rf'["\']?{re.escape("retriveled_knowledge")}["\']?\s*:\s*("((?:\\.|[^"\\])*)"|\'((?:\\.|[^\'\\])*)\'|([^\s,}}]+))'
-                m = re.search(pattern, text)
-                for grp in m.groups()[1:]:
-                    if grp:
-                        # args = {"retriveled_knowledge":grp}
-                        args = {
-                            "min_similarity": 0.5,
-                            "query": "企业信贷评估模板 融资需求评估",
-                            "top_k": 3,
-                        }
+            args = json.loads(command.function.arguments or "{}")
 
             # Execute the tool
             logger.info(f"🔧 Activating tool: '{name}'..., {type(args)}")

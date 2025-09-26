@@ -230,6 +230,21 @@ class AgentSession:
                     ) or result.__class__.__name__ == "ToolFailure":
                         is_success = False
 
+                    # Prepare metadata with tool execution details
+                    tool_metadata = {
+                        "tool": name,
+                        "status": "success" if is_success else "failed",
+                        "error": (
+                            str(result.error)
+                            if hasattr(result, "error") and result.error
+                            else None
+                        ),
+                    }
+                    
+                    # Include data field if present (for ToolResultExpanded)
+                    if hasattr(result, "data") and result.data is not None:
+                        tool_metadata["data"] = result.data
+                    
                     await self._send_event(
                         create_event(
                             AgentEvents.TOOL_RESULT,
@@ -240,15 +255,7 @@ class AgentSession:
                                 if hasattr(result, "output")
                                 else str(result)
                             ),
-                            metadata={
-                                "tool": name,
-                                "status": "success" if is_success else "failed",
-                                "error": (
-                                    str(result.error)
-                                    if hasattr(result, "error") and result.error
-                                    else None
-                                ),
-                            },
+                            metadata=tool_metadata,
                         )
                     )
 
