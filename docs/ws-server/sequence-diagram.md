@@ -120,12 +120,18 @@ sequenceDiagram
     WS-->>F: agent.final_answer
     Note left of WS: {"event":"agent.final_answer",<br/>"session_id":"sess_abc123",<br/>"content":"完整的总结内容..."}
 
-    Note over F,LLM: 4. 系统心跳和连接维护
+    Note over F,LLM: 4. LLM_MESSAGE 事件（可选，需环境变量启用）
+
+    A-->>WS: agent.llm_message
+    WS-->>F: agent.llm_message
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.llm_message",<br/>"session_id":"sess_abc123",<br/>"content":{"messages":[...],"total_messages":8},<br/>"metadata":{"agent_name":"toolcall","agent_state":"FINISHED"}}
+
+    Note over F,LLM: 5. 系统心跳和连接维护
 
     WS-->>F: system.heartbeat
     Note left of WS: ⚠️ NO session_id (system event)<br/>{"event":"system.heartbeat",<br/>"metadata":{"active_sessions":1,"uptime":3600}}
 
-    Note over F,LLM: 5. 用户取消操作示例
+    Note over F,LLM: 6. 用户取消操作示例
 
     F->>WS: user.message
     Note right of F: {"session_id":"sess_abc123",<br/>"event":"user.message",<br/>"content":"请详细分析一下全球气候变化..."}
@@ -143,7 +149,7 @@ sequenceDiagram
     WS-->>F: agent.interrupted
     Note left of WS: {"event":"agent.interrupted",<br/>"session_id":"sess_abc123",<br/>"content":"执行已取消"}
 
-    Note over F,LLM: 6. 错误处理示例
+    Note over F,LLM: 7. 错误处理示例
 
     F->>WS: user.message (无效会话)
     Note right of F: {"session_id":"invalid_session",<br/>"event":"user.message",<br/>"content":"测试消息"}
@@ -151,7 +157,7 @@ sequenceDiagram
     WS-->>F: agent.error
     Note left of WS: {"event":"agent.error",<br/>"session_id":"invalid_session",<br/>"content":"会话不存在"}
 
-    Note over F,LLM: 7. 连接关闭
+    Note over F,LLM: 8. 连接关闭
 
     F->>WS: WebSocket断开连接
     
@@ -367,6 +373,8 @@ sequenceDiagram
 - `agent.tool_result` - 工具调用结果
 - `agent.partial_answer` - 流式回答片段
 - `agent.final_answer` - 最终回答
+- `agent.llm_message` - LLM对话记录（可选功能）
+- `agent.user_confirm` - 用户确认请求
 - `agent.error` - Agent 执行错误
 - `agent.interrupted` - 用户取消操作
 
@@ -382,3 +390,21 @@ sequenceDiagram
 4. session_id 用于多会话场景下的消息路由和状态管理
 
 这个时序图展示了完整的前后端交互流程，包含了实际的消息内容格式和session_id覆盖情况，方便前端开发者理解和实现。
+
+### 新增LLM_MESSAGE事件说明:
+
+**LLM_MESSAGE事件特点:**
+- **可选功能**: 需要设置环境变量 `SEND_LLM_MESSAGE=true` 才会发送
+- **触发时机**: Agent执行完成后，在设置状态为FINISHED前发送
+- **内容格式**: 包含完整的对话历史记录，格式与OpenAI ChatGPT API兼容
+- **用途**: 前端可以获取完整对话记录用于显示、分析或存储
+- **性能考虑**: 由于包含完整消息历史，数据量可能较大，建议按需启用
+
+**环境变量配置:**
+```bash
+# 启用LLM_MESSAGE事件（任意一种方式）
+SEND_LLM_MESSAGE=true
+SEND_LLM_MESSAGE=1
+SEND_LLM_MESSAGE=yes
+SEND_LLM_MESSAGE=on
+```

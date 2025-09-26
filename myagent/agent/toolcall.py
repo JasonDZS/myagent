@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 from typing import Any, List, Optional, Union
 
@@ -243,6 +244,9 @@ class ToolCallAgent(ReActAgent):
         if self._should_finish_execution(name=name, result=result, **kwargs):
             # Generate summary before finishing
             await self._generate_final_summary()
+
+            # Send LLM_MESSAGE event if enabled
+            await self._send_llm_message_event()
 
             logger.info(f"🏁 Special tool '{name}' has completed the task!")
             self.state = AgentState.FINISHED
@@ -568,6 +572,51 @@ class ToolCallAgent(ReActAgent):
                 ))
             except Exception as e:
                 logger.debug(f"Failed to send thinking event: {e}")
+
+    async def _send_llm_message_event(self):
+        """Send LLM_MESSAGE event with memory messages if environment variable is enabled"""
+        # Check if SEND_LLM_MESSAGE environment variable is set to enable this feature
+        if not os.getenv("SEND_LLM_MESSAGE", "").lower() in ("true", "1", "yes", "on"):
+            return
+            
+        # Check if we have WebSocket streaming capabilities
+        ws_session = None
+        
+        # Try to get WebSocket session from trace manager
+        if TRACE_AVAILABLE:
+            try:
+                trace_manager = get_trace_manager()
+                if hasattr(trace_manager, 'ws_session'):
+                    ws_session = trace_manager.ws_session
+            except Exception as e:
+                logger.debug(f"Could not get WebSocket session for LLM_MESSAGE: {e}")
+        
+        if ws_session:
+            try:
+                from ..ws.events import create_event, AgentEvents
+                
+                # Convert memory messages to dict format
+                messages_dict = self.memory.to_dict_list()
+                
+                # Send LLM_MESSAGE event with all conversation messages
+                await ws_session._send_event(create_event(
+                    AgentEvents.LLM_MESSAGE,
+                    session_id=ws_session.session_id,
+                    content={
+                        "messages": messages_dict,
+                        "total_messages": len(messages_dict)
+                    },
+                    metadata={
+                        "agent_name": self.name,
+                        "agent_state": self.state.value,
+                        "final_response": getattr(self, 'final_response', None)
+                    }
+                ))
+                
+                logger.info(f"📤 Sent LLM_MESSAGE event with {len(messages_dict)} messages")
+                
+            except Exception as e:
+                logger.error(f"Failed to send LLM_MESSAGE event: {e}")
 
     async def cleanup(self):
         """Clean up resources used by the agent's tools."""

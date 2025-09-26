@@ -48,6 +48,7 @@ class MyAgentClient {
         this.onThinking = null;
         this.onPartialAnswer = null;
         this.onFinalAnswer = null;
+        this.onLLMMessage = null;
         this.onToolCall = null;
         this.onToolResult = null;
         this.onError = null;
@@ -105,6 +106,11 @@ class MyAgentClient {
             case 'agent.final_answer':
                 console.log('🎯 最终回答:', content);
                 this.onFinalAnswer?.(data);
+                break;
+                
+            case 'agent.llm_message':
+                console.log('📋 LLM对话记录:', content);
+                this.onLLMMessage?.(data);
                 break;
                 
             case 'agent.tool_call':
@@ -210,6 +216,7 @@ interface WebSocketMessage {
 - `agent.tool_result` - 工具调用结果
 - `agent.partial_answer` - 流式回答片段
 - `agent.final_answer` - 最终回答
+- `agent.llm_message` - LLM对话记录（可选，需环境变量启用）
 - `agent.error` - Agent 执行错误
 
 **❌ 不包含 session_id 的事件（预期行为）:**
@@ -349,6 +356,55 @@ function validateMessage(data) {
     "content": "北京今天的天气是25°C，晴朗，湿度45%。适合外出活动。"
 }
 ```
+
+#### `agent.llm_message` - LLM对话记录
+```javascript
+{
+    "event": "agent.llm_message",
+    "session_id": "session_123",
+    "timestamp": "2024-01-01T12:00:00.000Z",
+    "content": {
+        "messages": [
+            {
+                "role": "user",
+                "content": "北京今天天气怎么样？"
+            },
+            {
+                "role": "assistant",
+                "content": "我来为您查询一下北京今天的天气情况。",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"location\": \"北京\"}"
+                        }
+                    }
+                ]
+            },
+            {
+                "role": "tool",
+                "content": "北京今天晴朗，气温25°C，湿度45%",
+                "name": "get_weather",
+                "tool_call_id": "call_123"
+            },
+            {
+                "role": "assistant",
+                "content": "根据查询结果，北京今天天气晴朗，气温25°C，湿度45%。适合外出活动！"
+            }
+        ],
+        "total_messages": 4
+    },
+    "metadata": {
+        "agent_name": "weather_assistant",
+        "agent_state": "FINISHED",
+        "final_response": "根据查询结果，北京今天天气晴朗，气温25°C，湿度45%。适合外出活动！"
+    }
+}
+```
+
+**注意：** `agent.llm_message` 事件是可选功能，需要设置环境变量 `SEND_LLM_MESSAGE=true` 才会发送。该事件包含完整的对话历史，用于前端显示、分析或存储完整的交互记录。
 
 ### 2.5 系统事件
 
@@ -517,6 +573,15 @@ export function useMyAgent(options: UseMyAgentOptions = {}) {
                     content: content || '',
                     metadata
                 });
+                break;
+                
+            case 'agent.llm_message':
+                // 处理LLM对话记录
+                console.log('收到完整对话记录:', content);
+                // 可以将对话记录存储或处理
+                if (typeof window !== 'undefined' && window.handleLLMMessages) {
+                    window.handleLLMMessages(content);
+                }
                 break;
                 
             case 'agent.tool_call':
@@ -1109,6 +1174,15 @@ const handleMessage = (data) => {
         content: content || '',
         metadata
       });
+      break;
+      
+    case 'agent.llm_message':
+      // 处理LLM对话记录
+      console.log('收到完整对话记录:', content);
+      // 可以触发事件或调用处理函数
+      if (typeof window !== 'undefined' && window.handleLLMMessages) {
+        window.handleLLMMessages(content);
+      }
       break;
       
     case 'agent.tool_call':
@@ -2210,6 +2284,7 @@ export type WebSocketEventType =
   | 'agent.tool_result' 
   | 'agent.partial_answer'
   | 'agent.final_answer'
+  | 'agent.llm_message'
   | 'agent.user_confirm'
   | 'agent.error'
   | 'agent.timeout'
@@ -2510,6 +2585,147 @@ describe('WebSocket Integration', () => {
 
 ---
 
+## 12. LLM_MESSAGE 事件处理示例
+
+### 12.1 完整对话记录处理
+
+```javascript
+// LLM_MESSAGE 事件处理器
+function handleLLMMessage(eventData) {
+    const { content, metadata } = eventData;
+    const { messages, total_messages } = content;
+    
+    console.log(`收到完整对话记录: ${total_messages} 条消息`);
+    
+    // 显示对话历史
+    displayConversationHistory(messages);
+    
+    // 存储对话记录
+    saveConversationToStorage(messages, metadata);
+    
+    // 分析对话内容
+    analyzeConversation(messages);
+}
+
+function displayConversationHistory(messages) {
+    const historyContainer = document.getElementById('conversation-history');
+    historyContainer.innerHTML = '';
+    
+    messages.forEach((message, index) => {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${message.role}`;
+        
+        // 处理不同消息类型
+        if (message.role === 'assistant' && message.tool_calls) {
+            messageDiv.innerHTML = `
+                <div class="message-content">${message.content}</div>
+                <div class="tool-calls">
+                    ${message.tool_calls.map(call => `
+                        <div class="tool-call">
+                            <strong>工具:</strong> ${call.function.name}
+                            <pre>${call.function.arguments}</pre>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        } else if (message.role === 'tool') {
+            messageDiv.innerHTML = `
+                <div class="message-content">
+                    <strong>工具结果 (${message.name}):</strong>
+                    ${message.content}
+                </div>
+            `;
+        } else {
+            messageDiv.innerHTML = `<div class="message-content">${message.content}</div>`;
+        }
+        
+        historyContainer.appendChild(messageDiv);
+    });
+}
+
+function saveConversationToStorage(messages, metadata) {
+    const conversationData = {
+        timestamp: new Date().toISOString(),
+        agent_name: metadata.agent_name,
+        messages: messages,
+        total_messages: messages.length
+    };
+    
+    // 存储到本地存储
+    const existingData = JSON.parse(localStorage.getItem('agent_conversations') || '[]');
+    existingData.push(conversationData);
+    localStorage.setItem('agent_conversations', JSON.stringify(existingData));
+}
+
+function analyzeConversation(messages) {
+    // 统计分析
+    const stats = {
+        userMessages: messages.filter(m => m.role === 'user').length,
+        assistantMessages: messages.filter(m => m.role === 'assistant').length,
+        toolCalls: messages.filter(m => m.role === 'assistant' && m.tool_calls).length,
+        toolResults: messages.filter(m => m.role === 'tool').length
+    };
+    
+    console.log('对话统计:', stats);
+}
+```
+
+### 12.2 环境变量配置说明
+
+要启用LLM_MESSAGE事件，需要在服务器端设置环境变量：
+
+```bash
+# 启用LLM_MESSAGE事件
+export SEND_LLM_MESSAGE=true
+
+# 或者在.env文件中
+SEND_LLM_MESSAGE=true
+
+# 其他有效值：1, yes, on
+SEND_LLM_MESSAGE=1
+SEND_LLM_MESSAGE=yes  
+SEND_LLM_MESSAGE=on
+```
+
+### 12.3 React Hook 扩展
+
+```tsx
+// 扩展useMyAgent Hook以支持LLM_MESSAGE
+export function useMyAgentWithHistory(options: UseMyAgentOptions = {}) {
+    const agentHook = useMyAgent(options);
+    const [conversationHistory, setConversationHistory] = useState<any[]>([]);
+    
+    useEffect(() => {
+        // 设置LLM_MESSAGE事件处理器
+        window.handleLLMMessages = (content: any) => {
+            setConversationHistory(content.messages);
+            
+            // 触发自定义事件
+            window.dispatchEvent(new CustomEvent('llm-message-received', {
+                detail: content
+            }));
+        };
+        
+        return () => {
+            delete window.handleLLMMessages;
+        };
+    }, []);
+    
+    return {
+        ...agentHook,
+        conversationHistory,
+        clearHistory: () => setConversationHistory([])
+    };
+}
+```
+
+---
+
 本文档提供了完整的前端对接指南，包含了从基础连接到高级功能的所有实现细节。开发者可以根据项目需求选择适合的技术栈和实现方案。
+
+**新增功能：**
+- ✅ LLM_MESSAGE事件支持完整对话记录获取
+- ✅ 环境变量控制可选事件发送  
+- ✅ 完整的消息历史处理示例
 
 如有问题，请参考 [GitHub Issues](https://github.com/your-repo/myagent/issues) 或联系开发团队。

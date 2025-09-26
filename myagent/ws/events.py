@@ -39,6 +39,7 @@ class AgentEvents:
     INTERRUPTED = "agent.interrupted"
     SESSION_CREATED = "agent.session_created"
     SESSION_END = "agent.session_end"
+    LLM_MESSAGE = "agent.llm_message"
 
 
 class SystemEvents:
