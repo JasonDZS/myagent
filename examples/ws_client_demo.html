@@ -149,7 +149,7 @@
 </head>
 <body>
     <h1>🤖 MyAgent WebSocket 客户端演示</h1>
-    
+
     <div class="container">
         <h3>连接配置</h3>
         <div class="config">
@@ -170,7 +170,7 @@
             <input type="text" id="messageInput" placeholder="输入您的消息..." disabled onkeypress="handleKeyPress(event)">
             <button id="sendBtn" onclick="sendMessage()" disabled>发送</button>
         </div>
-        
+
         <div class="examples">
             <h4>示例问题 (点击快速发送):</h4>
             <button class="example-btn" onclick="sendExampleMessage('你好！')">你好！</button>
@@ -207,10 +207,10 @@
             const chatContainer = document.getElementById('chatContainer');
             const messageEl = document.createElement('div');
             messageEl.className = `message ${type}`;
-            
+
             const timestamp = new Date().toLocaleTimeString();
             let messageContent = content;
-            
+
             if (metadata) {
                 if (metadata.tool) {
                     messageContent = `🔧 ${metadata.tool}: ${content}`;
@@ -219,12 +219,12 @@
                     messageContent = `💭 步骤 ${metadata.step}: ${content}`;
                 }
             }
-            
+
             messageEl.innerHTML = `
                 <div>${messageContent}</div>
                 <span class="timestamp">${timestamp}</span>
             `;
-            
+
             chatContainer.appendChild(messageEl);
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
@@ -240,28 +240,28 @@
         function connect() {
             const wsUrl = document.getElementById('wsUrl').value;
             updateStatus('正在连接...', 'connecting');
-            
+
             try {
                 ws = new WebSocket(wsUrl);
-                
+
                 ws.onopen = () => {
                     isConnected = true;
                     updateStatus('已连接', 'connected');
                     document.getElementById('connectBtn').textContent = '断开';
                     document.getElementById('messageInput').disabled = false;
                     document.getElementById('sendBtn').disabled = false;
-                    
+
                     addMessage('WebSocket 连接已建立', 'system');
-                    
+
                     // 自动创建会话
                     createSession();
                 };
-                
+
                 ws.onmessage = (event) => {
                     const data = JSON.parse(event.data);
                     handleMessage(data);
                 };
-                
+
                 ws.onclose = () => {
                     isConnected = false;
                     sessionId = null;
@@ -269,15 +269,15 @@
                     document.getElementById('connectBtn').textContent = '连接';
                     document.getElementById('messageInput').disabled = true;
                     document.getElementById('sendBtn').disabled = true;
-                    
+
                     addMessage('WebSocket 连接已断开', 'system');
                 };
-                
+
                 ws.onerror = (error) => {
                     console.error('WebSocket 错误:', error);
                     addMessage('连接出错，请检查服务器是否启动', 'system');
                 };
-                
+
             } catch (error) {
                 updateStatus('连接失败', 'disconnected');
                 addMessage(`连接失败: ${error.message}`, 'system');
@@ -295,54 +295,54 @@
                 event: 'user.create_session',
                 timestamp: new Date().toISOString()
             };
-            
+
             ws.send(JSON.stringify(message));
         }
 
         function handleMessage(data) {
             console.log('收到消息:', data);
-            
+
             switch (data.event) {
                 case 'system.connected':
                     addMessage(`连接成功 (ID: ${data.metadata?.connection_id?.slice(-8)})`, 'system');
                     break;
-                    
+
                 case 'agent.session_created':
                     sessionId = data.session_id;
                     addMessage(`会话创建成功 (ID: ${sessionId.slice(-8)})`, 'system');
                     addMessage('您可以开始对话了！', 'system');
                     break;
-                    
+
                 case 'agent.thinking':
                     addMessage(data.content, 'thinking', data.metadata);
                     break;
-                    
+
                 case 'agent.tool_call':
                     const toolInfo = `调用工具: ${data.metadata?.tool}`;
                     addMessage(toolInfo, 'tool', data.metadata);
                     break;
-                    
+
                 case 'agent.tool_result':
                     const resultInfo = `工具结果: ${data.content}`;
                     addMessage(resultInfo, 'tool', data.metadata);
                     break;
-                    
+
                 case 'agent.partial_answer':
                     addMessage(data.content, 'agent');
                     break;
-                    
+
                 case 'agent.final_answer':
                     addMessage(data.content, 'agent');
                     break;
-                    
+
                 case 'agent.error':
                     addMessage(`❌ 错误: ${data.content}`, 'system');
                     break;
-                    
+
                 case 'system.heartbeat':
                     // 心跳消息，不显示
                     break;
-                    
+
                 default:
                     addMessage(`${data.event}: ${data.content || JSON.stringify(data)}`, 'system');
             }
@@ -351,20 +351,20 @@
         function sendMessage() {
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
-            
+
             if (!message || !sessionId) {
                 return;
             }
-            
+
             addMessage(message, 'user');
-            
+
             const wsMessage = {
                 event: 'user.message',
                 session_id: sessionId,
                 content: message,
                 timestamp: new Date().toISOString()
             };
-            
+
             ws.send(JSON.stringify(wsMessage));
             input.value = '';
         }
@@ -374,7 +374,7 @@
                 alert('请先连接到服务器');
                 return;
             }
-            
+
             document.getElementById('messageInput').value = message;
             sendMessage();
         }

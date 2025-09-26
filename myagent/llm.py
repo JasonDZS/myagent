@@ -1,37 +1,35 @@
 import math
-from typing import Dict, List, Optional, Union
+from typing import ClassVar
 
 import tiktoken
-from openai import (
-    APIError,
-    AsyncAzureOpenAI,
-    AsyncOpenAI,
-    AuthenticationError,
-    OpenAIError,
-    RateLimitError,
-)
-from openai.types.chat import ChatCompletion, ChatCompletionMessage
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_random_exponential,
-)
+from openai import APIError
+from openai import AsyncAzureOpenAI
+from openai import AsyncOpenAI
+from openai import AuthenticationError
+from openai import OpenAIError
+from openai import RateLimitError
+from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletionMessage
+from tenacity import retry
+from tenacity import retry_if_exception_type
+from tenacity import stop_after_attempt
+from tenacity import wait_random_exponential
 
-from .config import settings, LLMSettings
+from .config import LLMSettings
+from .config import settings
 from .exceptions import TokenLimitExceeded
-from .logger import logger  # Assuming a logger is set up in your app
 from .llm_logger import get_llm_logger
-from .schema import (
-    ROLE_VALUES,
-    TOOL_CHOICE_TYPE,
-    TOOL_CHOICE_VALUES,
-    Message,
-    ToolChoice,
-)
+from .logger import logger  # Assuming a logger is set up in your app
+from .schema import ROLE_VALUES
+from .schema import TOOL_CHOICE_TYPE
+from .schema import TOOL_CHOICE_VALUES
+from .schema import Message
+from .schema import ToolChoice
 
 try:
-    from .trace import get_trace_manager, RunType
+    from .trace import RunType
+    from .trace import get_trace_manager
+
     TRACE_AVAILABLE = True
 except ImportError:
     TRACE_AVAILABLE = False
@@ -88,11 +86,9 @@ class TokenCounter:
         # OpenAI doesn't specify a separate calculation for medium
 
         # For high detail, calculate based on dimensions if available
-        if detail == "high" or detail == "medium":
-            # If dimensions are provided in the image_item
-            if "dimensions" in image_item:
-                width, height = image_item["dimensions"]
-                return self._calculate_high_detail_tokens(width, height)
+        if (detail == "high" or detail == "medium") and "dimensions" in image_item:
+            width, height = image_item["dimensions"]
+            return self._calculate_high_detail_tokens(width, height)
 
         return (
             self._calculate_high_detail_tokens(1024, 1024) if detail == "high" else 1024
@@ -121,7 +117,7 @@ class TokenCounter:
             total_tiles * self.HIGH_DETAIL_TILE_TOKENS
         ) + self.LOW_DETAIL_IMAGE_TOKENS
 
-    def count_content(self, content: Union[str, List[Union[str, dict]]]) -> int:
+    def count_content(self, content: str | list[str | dict]) -> int:
         """Calculate tokens for message content"""
         if not content:
             return 0
@@ -140,7 +136,7 @@ class TokenCounter:
                     token_count += self.count_image(item)
         return token_count
 
-    def count_tool_calls(self, tool_calls: List[dict]) -> int:
+    def count_tool_calls(self, tool_calls: list[dict]) -> int:
         """Calculate tokens for tool calls"""
         token_count = 0
         for tool_call in tool_calls:
@@ -150,7 +146,7 @@ class TokenCounter:
                 token_count += self.count_text(function.get("arguments", ""))
         return token_count
 
-    def count_message_tokens(self, messages: List[dict]) -> int:
+    def count_message_tokens(self, messages: list[dict]) -> int:
         """Calculate the total number of tokens in a message list"""
         total_tokens = self.FORMAT_TOKENS  # Base format tokens
 
@@ -178,10 +174,10 @@ class TokenCounter:
 
 
 class LLM:
-    _instances: Dict[str, "LLM"] = {}
+    _instances: ClassVar[dict[str, "LLM"]] = {}
 
     def __new__(
-        cls, config_name: str = "default", llm_config: Optional[LLMSettings] = None
+        cls, config_name: str = "default", llm_config: LLMSettings | None = None
     ):
         if config_name not in cls._instances:
             instance = super().__new__(cls)
@@ -190,7 +186,7 @@ class LLM:
         return cls._instances[config_name]
 
     def __init__(
-        self, config_name: str = "default", llm_config: Optional[LLMSettings] = None
+        self, config_name: str = "default", llm_config: LLMSettings | None = None
     ):
         if not hasattr(self, "client"):  # Only initialize if not already initialized
             llm_config = llm_config or settings.llm_settings
@@ -234,7 +230,7 @@ class LLM:
             return 0
         return len(self.tokenizer.encode(text))
 
-    def count_message_tokens(self, messages: List[dict]) -> int:
+    def count_message_tokens(self, messages: list[dict]) -> int:
         return self.token_counter.count_message_tokens(messages)
 
     def update_token_count(self, input_tokens: int, completion_tokens: int = 0) -> None:
@@ -269,9 +265,9 @@ class LLM:
         """Wrapper for LLM calls with tracing."""
         if not self.enable_tracing or not TRACE_AVAILABLE:
             return await llm_call_func()
-        
+
         trace_manager = get_trace_manager()
-        
+
         # Prepare inputs for tracing
         trace_inputs = {
             "model": self.model,
@@ -280,48 +276,63 @@ class LLM:
             "method": method_name,
             "message_count": len(inputs.get("messages", [])),
             "has_system_msgs": bool(inputs.get("system_msgs")),
-            "stream": inputs.get("stream", False)
+            "stream": inputs.get("stream", False),
         }
-        
+
         # Add message preview (first 200 chars of each message)
         if "messages" in inputs:
             trace_inputs["message_preview"] = [
                 {
-                    "role": msg.get("role", "unknown") if isinstance(msg, dict) else msg.role,
-                    "content": (msg.get("content", "") if isinstance(msg, dict) else msg.content or "")[:200] + "..."
+                    "role": (
+                        msg.get("role", "unknown")
+                        if isinstance(msg, dict)
+                        else msg.role
+                    ),
+                    "content": (
+                        msg.get("content", "")
+                        if isinstance(msg, dict)
+                        else msg.content or ""
+                    )[:200]
+                    + "...",
                 }
                 for msg in inputs["messages"][:3]  # Only first 3 messages
             ]
-        
+
         async with trace_manager.run(
-            name=f"llm_{method_name}",
-            run_type=RunType.LLM,
-            inputs=trace_inputs
+            name=f"llm_{method_name}", run_type=RunType.LLM, inputs=trace_inputs
         ) as run_ctx:
             try:
                 result = await llm_call_func()
-                
+
                 # Record outputs
-                run_ctx.outputs.update({
-                    "response_length": len(result) if isinstance(result, str) else 0,
-                    "response_preview": result[:200] + "..." if isinstance(result, str) and len(result) > 200 else result
-                })
-                
+                run_ctx.outputs.update(
+                    {
+                        "response_length": (
+                            len(result) if isinstance(result, str) else 0
+                        ),
+                        "response_preview": (
+                            result[:200] + "..."
+                            if isinstance(result, str) and len(result) > 200
+                            else result
+                        ),
+                    }
+                )
+
                 # Try to get token usage if available
-                if hasattr(self, '_last_token_usage') and self._last_token_usage:
+                if hasattr(self, "_last_token_usage") and self._last_token_usage:
                     run_ctx.token_usage = self._last_token_usage
                     self._last_token_usage = None  # Clear after use
-                
+
                 return result
-                
+
             except Exception as e:
                 run_ctx.fail(str(e), type(e).__name__)
                 raise
 
     @staticmethod
     def format_messages(
-        messages: List[Union[dict, Message]], supports_images: bool = False
-    ) -> List[dict]:
+        messages: list[dict | Message], supports_images: bool = False
+    ) -> list[dict]:
         """
         Format messages for LLM by converting them to OpenAI message format.
 
@@ -415,10 +426,10 @@ class LLM:
     )
     async def ask(
         self,
-        messages: List[Union[dict, Message]],
-        system_msgs: Optional[List[Union[dict, Message]]] = None,
+        messages: list[dict | Message],
+        system_msgs: list[dict | Message] | None = None,
         stream: bool = True,
-        temperature: Optional[float] = None,
+        temperature: float | None = None,
     ) -> str:
         """
         Send a prompt to the LLM and get the response.
@@ -443,21 +454,21 @@ class LLM:
             "messages": messages,
             "system_msgs": system_msgs,
             "stream": stream,
-            "temperature": temperature
+            "temperature": temperature,
         }
-        
+
         return await self._traced_llm_call(
             "ask",
             inputs,
-            lambda: self._ask_impl(messages, system_msgs, stream, temperature)
+            lambda: self._ask_impl(messages, system_msgs, stream, temperature),
         )
-    
+
     async def _ask_impl(
         self,
-        messages: List[Union[dict, Message]],
-        system_msgs: Optional[List[Union[dict, Message]]] = None,
+        messages: list[dict | Message],
+        system_msgs: list[dict | Message] | None = None,
         stream: bool = True,
-        temperature: Optional[float] = None,
+        temperature: float | None = None,
     ) -> str:
         """Internal implementation of ask method."""
         try:
@@ -518,8 +529,10 @@ class LLM:
                         "input_tokens": response.usage.prompt_tokens,
                         "output_tokens": response.usage.completion_tokens,
                         "stream": False,
-                        "temperature": temperature if temperature is not None else self.temperature
-                    }
+                        "temperature": (
+                            temperature if temperature is not None else self.temperature
+                        ),
+                    },
                 )
 
                 return response.choices[0].message.content
@@ -559,8 +572,10 @@ class LLM:
                     "input_tokens": input_tokens,
                     "output_tokens": completion_tokens,
                     "stream": True,
-                    "temperature": temperature if temperature is not None else self.temperature
-                }
+                    "temperature": (
+                        temperature if temperature is not None else self.temperature
+                    ),
+                },
             )
 
             return full_response
@@ -569,10 +584,10 @@ class LLM:
             # Re-raise token limit errors without logging
             raise
         except ValueError:
-            logger.exception(f"Validation error")
+            logger.exception("Validation error")
             raise
         except OpenAIError as oe:
-            logger.exception(f"OpenAI API error")
+            logger.exception("OpenAI API error")
             if isinstance(oe, AuthenticationError):
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
@@ -581,7 +596,7 @@ class LLM:
                 logger.error(f"API error: {oe}")
             raise
         except Exception:
-            logger.exception(f"Unexpected error in ask")
+            logger.exception("Unexpected error in ask")
             raise
 
     @retry(
@@ -593,11 +608,11 @@ class LLM:
     )
     async def ask_with_images(
         self,
-        messages: List[Union[dict, Message]],
-        images: List[Union[str, dict]],
-        system_msgs: Optional[List[Union[dict, Message]]] = None,
+        messages: list[dict | Message],
+        images: list[str | dict],
+        system_msgs: list[dict | Message] | None = None,
         stream: bool = False,
-        temperature: Optional[float] = None,
+        temperature: float | None = None,
     ) -> str:
         """
         Send a prompt with images to the LLM and get the response.
@@ -702,7 +717,7 @@ class LLM:
                     raise ValueError("Empty or invalid response from LLM")
 
                 self.update_token_count(response.usage.prompt_tokens)
-                
+
                 # 记录LLM调用
                 llm_logger = get_llm_logger()
                 llm_logger.log_llm_call(
@@ -711,14 +726,20 @@ class LLM:
                     response=response.choices[0].message.content,
                     metadata={
                         "input_tokens": response.usage.prompt_tokens,
-                        "output_tokens": response.usage.completion_tokens if hasattr(response.usage, 'completion_tokens') else 0,
+                        "output_tokens": (
+                            response.usage.completion_tokens
+                            if hasattr(response.usage, "completion_tokens")
+                            else 0
+                        ),
                         "stream": False,
-                        "temperature": temperature if temperature is not None else self.temperature,
+                        "temperature": (
+                            temperature if temperature is not None else self.temperature
+                        ),
                         "with_images": True,
-                        "image_count": len(images)
-                    }
+                        "image_count": len(images),
+                    },
                 )
-                
+
                 return response.choices[0].message.content
 
             # Handle streaming request
@@ -739,7 +760,7 @@ class LLM:
 
             # 估算完成token数
             completion_tokens = self.count_tokens(full_response)
-            
+
             # 记录LLM调用
             llm_logger = get_llm_logger()
             llm_logger.log_llm_call(
@@ -750,10 +771,12 @@ class LLM:
                     "input_tokens": input_tokens,
                     "output_tokens": completion_tokens,
                     "stream": True,
-                    "temperature": temperature if temperature is not None else self.temperature,
+                    "temperature": (
+                        temperature if temperature is not None else self.temperature
+                    ),
                     "with_images": True,
-                    "image_count": len(images)
-                }
+                    "image_count": len(images),
+                },
             )
 
             return full_response
@@ -785,12 +808,12 @@ class LLM:
     )
     async def ask_tool(
         self,
-        messages: List[Union[dict, Message]],
-        system_msgs: Optional[List[Union[dict, Message]]] = None,
+        messages: list[dict | Message],
+        system_msgs: list[dict | Message] | None = None,
         timeout: int = 300,
-        tools: Optional[List[dict]] = None,
+        tools: list[dict] | None = None,
         tool_choice: TOOL_CHOICE_TYPE = ToolChoice.AUTO,  # type: ignore
-        temperature: Optional[float] = None,
+        temperature: float | None = None,
         **kwargs,
     ) -> ChatCompletionMessage | None:
         """
@@ -893,7 +916,7 @@ class LLM:
             tool_calls = response.choices[0].message.tool_calls
             if tool_calls:
                 message_content += f" Tools: {[tc.function.name for tc in tool_calls]}"
-            
+
             llm_logger.log_llm_call(
                 model=self.model,
                 messages=messages,
@@ -902,10 +925,12 @@ class LLM:
                     "input_tokens": response.usage.prompt_tokens,
                     "output_tokens": response.usage.completion_tokens,
                     "stream": False,
-                    "temperature": temperature if temperature is not None else self.temperature,
+                    "temperature": (
+                        temperature if temperature is not None else self.temperature
+                    ),
                     "tool_calls": len(tool_calls) if tool_calls else 0,
-                    "tools_available": len(tools) if tools else 0
-                }
+                    "tools_available": len(tools) if tools else 0,
+                },
             )
 
             return response.choices[0].message

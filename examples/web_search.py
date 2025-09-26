@@ -1,27 +1,28 @@
 """Serper web search example for myagent with trace recording."""
+
 import asyncio
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from typing import Any, ClassVar
+from urllib.error import HTTPError
+from urllib.error import URLError
+from urllib.request import Request
+from urllib.request import urlopen
 
 from myagent import create_react_agent
-from myagent.tool.base_tool import BaseTool, ToolResult
-from myagent.trace import (
-    TraceManager,
-    TraceQueryEngine,
-    TraceExporter,
-    TraceMetadata,
-    get_trace_manager
-)
+from myagent.tool.base_tool import BaseTool
+from myagent.tool.base_tool import ToolResult
+from myagent.trace import TraceExporter
+from myagent.trace import TraceMetadata
+from myagent.trace import TraceQueryEngine
+from myagent.trace import get_trace_manager
 
 
 class SerperSearchTool(BaseTool):
     name: str = "web_search"
     description: str = "Search the web via Serper (Google results)."
-    parameters: Dict[str, Any] = {
+    parameters: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
             "query": {
@@ -50,9 +51,9 @@ class SerperSearchTool(BaseTool):
         max_results: int = 3,
         region: str = "us",
     ) -> ToolResult:
-        snippets: List[str] = []
+        snippets: list[str] = []
 
-        def _split_region(value: str | None) -> Tuple[str | None, str | None]:
+        def _split_region(value: str | None) -> tuple[str | None, str | None]:
             if not value:
                 return None, None
             parts = value.split("-")
@@ -62,12 +63,12 @@ class SerperSearchTool(BaseTool):
             hl = parts[1] or None
             return gl, hl
 
-        def _search_sync() -> List[Dict[str, Any]]:
+        def _search_sync() -> list[dict[str, Any]]:
             api_key = os.environ.get("SERPER_API_KEY")
             if not api_key:
                 raise RuntimeError("SERPER_API_KEY environment variable is not set.")
 
-            payload: Dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "q": query,
                 "num": max(1, min(max_results, 10)),
             }
@@ -91,20 +92,21 @@ class SerperSearchTool(BaseTool):
             try:
                 with urlopen(request, timeout=10) as response:
                     if response.status != 200:
-                        raise RuntimeError(f"Serper request failed with status {response.status}.")
+                        raise RuntimeError(
+                            f"Serper request failed with status {response.status}."
+                        )
                     data = json.load(response)
             except (HTTPError, URLError, TimeoutError) as exc:
                 raise RuntimeError(f"Serper request failed: {exc}") from exc
 
-            results: List[Dict[str, Any]] = []
-            for item in data.get("organic", []):
-                results.append(
-                    {
-                        "title": item.get("title"),
-                        "href": item.get("link"),
-                        "body": item.get("snippet") or item.get("description"),
-                    }
-                )
+            results: list[dict[str, Any]] = [
+                {
+                    "title": item.get("title"),
+                    "href": item.get("link"),
+                    "body": item.get("snippet") or item.get("description"),
+                }
+                for item in data.get("organic", [])
+            ]
 
             return results
 
@@ -120,7 +122,10 @@ class SerperSearchTool(BaseTool):
                 if not parts:
                     continue
 
-                snippet_lines = [f"- {parts[0]}" + (f" ({href})" if href and href != parts[0] else "")]
+                snippet_lines = [
+                    f"- {parts[0]}"
+                    + (f" ({href})" if href and href != parts[0] else "")
+                ]
                 if body:
                     snippet_lines.append(f"  {body}")
 
@@ -133,7 +138,7 @@ class SerperSearchTool(BaseTool):
         result_text = "\n".join(snippets) if snippets else "No live web results found."
         return ToolResult(
             output=result_text,
-            system=f"Found {len(snippets)} search results for query: '{query}'"
+            system=f"Found {len(snippets)} search results for query: '{query}'",
         )
 
 
@@ -144,12 +149,9 @@ async def main() -> None:
         session_id=f"web_search_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         tags=["web_search", "serper", "openai_research"],
         environment="example",
-        custom_fields={
-            "example_type": "web_search",
-            "search_engine": "serper"
-        }
+        custom_fields={"example_type": "web_search", "search_engine": "serper"},
     )
-    
+
     # Create agent with tracing enabled
     agent = create_react_agent(
         name="web-searcher",
@@ -157,14 +159,14 @@ async def main() -> None:
         system_prompt="You research user questions and call web_search for up-to-date context.",
         next_step_prompt="Use web_search when you need fresh information before answering.",
         enable_tracing=True,
-        trace_metadata=metadata
+        trace_metadata=metadata,
     )
 
     print("🔍 Starting web search with trace recording...")
-    summary = await agent.run("查找 OpenAI 最新的产品发布，并给出链接。")
+    summary = await agent.run("查找 OpenAI 最新的产品发布,并给出链接。")
     print("\n✅ Agent execution completed:")
     print(summary)
-    
+
     # Save trace data to JSON
     await save_traces_to_json("web_search_traces.json")
 
@@ -172,36 +174,37 @@ async def main() -> None:
 async def save_traces_to_json(filename: str) -> None:
     """Save all traces to a JSON file."""
     print(f"\n💾 Saving trace data to {filename}...")
-    
+
     trace_manager = get_trace_manager()
     query_engine = TraceQueryEngine(trace_manager.storage)
     exporter = TraceExporter(query_engine)
-    
+
     # Export traces to JSON
     json_data = await exporter.export_traces_to_json()
-    
+
     if not os.path.isdir("./workdir/traces"):
         os.makedirs("./workdir/traces")
 
     # Save to file
-    with open(f"./workdir/traces/{filename}", 'w', encoding='utf-8') as f:
+    with open(f"./workdir/traces/{filename}", "w", encoding="utf-8") as f:
         f.write(json_data)
-    
+
     # Get statistics
     stats = await query_engine.get_trace_statistics()
-    
+
     print(f"✅ Saved trace data to {filename}")
-    print(f"📊 Trace Statistics:")
+    print("📊 Trace Statistics:")
     print(f"  - Total traces: {stats['total_traces']}")
     print(f"  - Average duration: {stats['avg_duration_ms']:.2f}ms")
     print(f"  - Error rate: {stats['error_rate']:.2%}")
-    
+
     # Also save a summary report
-    summary_filename = filename.replace('.json', '_summary.md')
+    summary_filename = filename.replace(".json", "_summary.md")
     summary = await exporter.export_trace_summary()
-    with open(f"./workdir/traces/{summary_filename}", 'w', encoding='utf-8') as f:
+    with open(f"./workdir/traces/{summary_filename}", "w", encoding="utf-8") as f:
         f.write(summary)
     print(f"📋 Summary report saved to ./workdir/traces/{summary_filename}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

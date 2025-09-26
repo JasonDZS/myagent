@@ -1,339 +1,193 @@
-# MyAgent WebSocket 一键部署解决方案
+# MyAgent WebSocket 文档中心
 
-## 🎯 概述
+## 📚 文档导航
 
-这是一个完整的 MyAgent WebSocket 一键部署解决方案，让您可以将任何 MyAgent 实例瞬间转换为 WebSocket 服务。
+### 🚀 快速开始
+- [**基础概念**](./basic-concepts.md) - WebSocket协议、事件系统和核心概念
+- [**快速开始**](./quick-start.md) - 5分钟上手，支持HTML、Node.js、Python
+- [**时序图**](./sequence-diagram.md) - 完整的消息交互流程图
 
-### ✨ 核心特性
+### 🔧 核心功能
+- [**用户确认机制**](./user-confirmation.md) - 危险操作的确认流程实现
+- [**错误处理**](./troubleshooting.md) - 常见问题和解决方案
 
-- **一键部署**: 使用 `myagent-ws server agent.py` 即可启动
-- **实时通信**: WebSocket 协议支持双向实时通信
-- **流式输出**: Agent 执行过程实时推送给前端
-- **会话管理**: 支持多用户并发会话
-- **错误处理**: 完善的异常处理和恢复机制
-- **生产就绪**: 支持 Docker 部署和集群扩展
+### 🎯 框架集成
+- [**React 集成**](./react-integration.md) - 完整的React Hook和组件实现
+- [**Vue 集成**](./vue-integration.md) - Vue3 Composition API集成方案
+- [**原生JavaScript**](./vanilla-js.md) - 纯JavaScript实现方案
 
-## 🏗️ 架构设计
+### ⚡ 高级主题
+- [**性能优化**](./performance.md) - 消息批处理、内存管理
+- [**安全考虑**](./security.md) - 认证、授权、数据验证
+- [**部署指南**](./deployment.md) - 生产环境部署最佳实践
 
-```
-用户请求 → WebSocket连接 → 会话管理 → Agent执行 → 实时响应
-    ↓           ↓           ↓         ↓         ↓
-  前端UI → WebSocket客户端 → 服务网关 → Agent实例 → 工具调用
-```
+## 🎯 选择你的方案
 
-### 核心组件
+### 我是前端新手
+👉 从 [**快速开始**](./quick-start.md) 开始，使用 HTML+JavaScript 版本
 
-1. **WebSocket 服务器** (`myagent/ws/server.py`)
-   - 连接管理和路由
-   - 消息协议处理
-   - 会话生命周期管理
+### 我使用 React
+👉 直接查看 [**React 集成**](./react-integration.md)，获取完整的Hook和组件
 
-2. **会话管理器** (`myagent/ws/session.py`)
-   - Agent 实例管理
-   - 执行状态追踪
-   - 实时事件推送
+### 我使用 Vue
+👉 查看 [**Vue 集成**](./vue-integration.md)，基于Composition API
 
-3. **CLI 工具** (`myagent/cli/server.py`)
-   - 动态加载 Agent 文件
-   - 命令行参数处理
-   - 服务启动和管理
+### 我需要了解协议细节
+👉 阅读 [**基础概念**](./basic-concepts.md) 和 [**时序图**](./sequence-diagram.md)
 
-4. **事件协议** (`myagent/ws/events.py`)
-   - 标准化消息格式
-   - 事件类型定义
-   - 协议验证
+### 我的应用需要用户确认
+👉 重点关注 [**用户确认机制**](./user-confirmation.md)
 
-## 📁 项目结构
+## ⚡ 核心特性一览
 
-```
-myagent/
-├── ws/                         # WebSocket 集成模块
-│   ├── __init__.py
-│   ├── server.py              # WebSocket 服务器
-│   ├── session.py             # 会话管理
-│   └── events.py              # 事件协议
-├── cli/                        # 命令行工具
-│   ├── __init__.py
-│   └── server.py              # CLI 实现
-├── examples/
-│   └── ws_weather_agent.py    # 示例 Agent
-├── scripts/
-│   └── myagent-ws             # CLI 入口脚本
-├── docs/ws-server/
-│   ├── design.md              # 完整技术设计
-│   ├── backend-deployment.md  # 后端实现方案
-│   ├── quick-start.md         # 快速开始指南
-│   └── README.md              # 本文档
-├── requirements-ws.txt         # WebSocket 服务依赖
-└── setup_ws.py                # 安装脚本
-```
+### 🔄 实时双向通信
+- WebSocket长连接，低延迟交互
+- 自动重连机制，处理网络异常
+- 心跳检测，维持连接健康
 
-## 🚀 使用方法
+### 🧠 Agent交互支持
+- 思考状态实时显示
+- 流式回答，逐步展示结果
+- 工具调用过程可视化
 
-### 1. 快速开始
+### ⚠️ 用户确认机制
+- 危险操作前强制确认
+- 参数详情展示
+- 自定义确认消息
 
-```bash
-# 1. 安装依赖
-pip install -r requirements-ws.txt
+### 📱 多端适配
+- 响应式设计，支持移动端
+- 完整的键盘快捷键支持
+- 可访问性优化
 
-# 2. 运行安装脚本
-python setup_ws.py
+## 📋 事件类型速查
 
-# 3. 创建您的 Agent
-cat > my_agent.py << 'EOF'
-from myagent import create_react_agent
-from myagent.tool.base_tool import BaseTool, ToolResult
-
-class GreetTool(BaseTool):
-    name = "greet"
-    description = "向用户问好"
-    parameters = {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "用户名"}
-        },
-        "required": ["name"]
-    }
-    
-    async def execute(self, name: str) -> ToolResult:
-        return ToolResult(output=f"Hello, {name}!")
-
-agent = create_react_agent(
-    name="greeter",
-    tools=[GreetTool()],
-    system_prompt="You are a friendly assistant.",
-    max_steps=3
-)
-EOF
-
-# 4. 一键启动服务
-myagent-ws server my_agent.py --host 0.0.0.0 --port 8080
-```
-
-### 2. 测试连接
-
+### 用户事件 (发送)
 ```javascript
-// 前端测试代码
+user.create_session  // 创建会话
+user.message        // 发送消息  
+user.response       // 确认响应
+user.cancel         // 取消执行
+```
+
+### Agent事件 (接收)
+```javascript
+agent.session_created  // 会话创建成功
+agent.thinking         // 思考状态
+agent.tool_call        // 工具调用
+agent.tool_result      // 工具结果
+agent.user_confirm     // 请求确认
+agent.partial_answer   // 流式回答
+agent.final_answer     // 最终回答
+agent.error           // 执行错误
+```
+
+### 系统事件 (接收)
+```javascript
+system.connected    // 连接确认
+system.heartbeat    // 心跳检测
+system.error        // 系统错误
+```
+
+## 🔧 基础消息格式
+
+```typescript
+interface WebSocketMessage {
+  event: string;           // 事件类型
+  timestamp: string;       // ISO时间戳
+  session_id?: string;     // 会话ID (非系统事件必需)
+  step_id?: string;        // 步骤ID (用于请求响应关联)
+  content?: string | object; // 消息内容
+  metadata?: object;       // 元数据
+}
+```
+
+## 🚀 快速示例
+
+### 基础连接
+```javascript
 const ws = new WebSocket('ws://localhost:8080');
 
 ws.onopen = () => {
-    console.log('Connected!');
     // 创建会话
     ws.send(JSON.stringify({
         event: 'user.create_session',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        content: 'create_session'
     }));
 };
 
 ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
-    console.log('Received:', data);
+    console.log('收到消息:', data);
     
     if (data.event === 'agent.session_created') {
-        // 发送消息
+        // 发送测试消息
         ws.send(JSON.stringify({
-            event: 'user.message',
             session_id: data.session_id,
-            content: '你好！',
-            timestamp: new Date().toISOString()
+            event: 'user.message',
+            timestamp: new Date().toISOString(),
+            content: '你好！'
         }));
     }
 };
 ```
 
-## 📊 WebSocket 事件流
+### React Hook 使用
+```typescript
+function ChatApp() {
+    const { 
+        connected, 
+        messages, 
+        sendMessage, 
+        pendingConfirmation,
+        respondToConfirmation 
+    } = useMyAgent();
 
-```mermaid
-sequenceDiagram
-    participant Client as 前端客户端
-    participant Server as WebSocket服务器
-    participant Session as 会话管理器
-    participant Agent as Agent实例
-    
-    Client->>Server: user.create_session
-    Server->>Session: 创建新会话
-    Session-->>Server: agent.session_created
-    Server-->>Client: agent.session_created
-    
-    Client->>Server: user.message
-    Server->>Session: 处理用户消息
-    Session->>Agent: 执行Agent
-    
-    Agent-->>Session: agent.thinking
-    Session-->>Server: 转发事件
-    Server-->>Client: agent.thinking
-    
-    Agent-->>Session: agent.tool_call
-    Session-->>Server: 转发事件
-    Server-->>Client: agent.tool_call
-    
-    Agent-->>Session: agent.tool_result
-    Session-->>Server: 转发事件
-    Server-->>Client: agent.tool_result
-    
-    Agent-->>Session: agent.final_answer
-    Session-->>Server: 转发事件
-    Server-->>Client: agent.final_answer
+    return (
+        <div>
+            {messages.map(msg => (
+                <div key={msg.id}>{msg.content}</div>
+            ))}
+            
+            {pendingConfirmation && (
+                <ConfirmationDialog 
+                    confirmation={pendingConfirmation}
+                    onConfirm={respondToConfirmation}
+                />
+            )}
+            
+            <input onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                    sendMessage(e.target.value);
+                    e.target.value = '';
+                }
+            }} />
+        </div>
+    );
+}
 ```
 
-## 🎮 完整示例
+## 🛟 获取帮助
 
-### 天气助手 Agent
+### 常见问题
+查看 [**故障排除指南**](./troubleshooting.md)，涵盖了大部分常见问题的解决方案。
 
-我们提供了一个功能完整的天气助手示例：
+### 问题报告
+如果你发现了文档中的错误或需要新功能，请在 GitHub Issues 中反馈。
 
-```bash
-# 启动天气助手服务
-myagent-ws server examples/ws_weather_agent.py --port 8080
-
-# 服务启动后会显示：
-🔍 正在加载 Agent 文件: examples/ws_weather_agent.py
-✅ Agent 加载成功: weather-assistant
-🚀 MyAgent WebSocket 服务启动在 ws://localhost:8080
-```
-
-### 支持的功能
-
-- 🌤️ **天气查询**: "北京今天天气怎么样？"
-- 🏙️ **城市信息**: "告诉我上海的基本信息"
-- 🔄 **实时流式输出**: 执行过程实时显示
-- ⚡ **并发会话**: 支持多用户同时使用
-
-## 🛠️ 高级配置
-
-### 生产环境部署
-
-```bash
-# Docker 部署
-docker build -t myagent-ws .
-docker run -p 8080:8080 -v ./agents:/app/agents myagent-ws
-
-# 使用环境变量配置
-export OPENAI_API_KEY="your-api-key"
-export SERPER_API_KEY="your-serper-key"  # 如果使用搜索功能
-
-myagent-ws server production_agent.py --host 0.0.0.0 --port 8080
-```
-
-### 集群部署
-
-```yaml
-# docker-compose.yml
-version: '3.8'
-services:
-  myagent-ws:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-    volumes:
-      - ./agents:/app/agents
-    command: ["myagent-ws", "server", "/app/agents/my_agent.py", "--host", "0.0.0.0"]
-    
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
-    depends_on:
-      - myagent-ws
-```
-
-## 📈 性能和扩展
-
-### 性能指标
-
-- **并发连接**: 支持 1000+ 并发 WebSocket 连接
-- **响应延迟**: < 100ms 消息路由延迟
-- **内存使用**: 每会话约 10-50MB（取决于 Agent 复杂度）
-- **CPU 使用**: 支持多核并行处理
-
-### 扩展选项
-
-1. **水平扩展**: 通过负载均衡器分发连接
-2. **Redis 集群**: 使用 Redis 存储会话状态
-3. **消息队列**: Kafka/RabbitMQ 处理高并发消息
-4. **容器编排**: Kubernetes 自动扩缩容
-
-## 🔒 安全特性
-
-- **输入验证**: JSON Schema 验证所有消息
-- **会话隔离**: 每个会话独立的 Agent 实例
-- **连接管理**: 自动清理断开的连接
-- **错误处理**: 优雅处理各种异常情况
-- **资源限制**: 防止单个会话占用过多资源
-
-## 🧪 测试和调试
-
-### 单元测试
-
-```bash
-# 测试 Agent 功能
-python -c "
-import asyncio
-from my_agent import agent
-result = asyncio.run(agent.arun('测试消息'))
-print(result)
-"
-
-# 测试 WebSocket 连接
-python -c "
-import asyncio
-import websockets
-import json
-
-async def test():
-    async with websockets.connect('ws://localhost:8080') as ws:
-        await ws.send(json.dumps({'event': 'user.create_session'}))
-        response = await ws.recv()
-        print(json.loads(response))
-
-asyncio.run(test())
-"
-```
-
-### 调试模式
-
-```bash
-# 启用详细日志
-myagent-ws server my_agent.py --debug
-
-# 查看服务状态
-curl http://localhost:8081/health  # 如果启用了健康检查
-```
-
-## 📚 文档索引
-
-- [快速开始指南](quick-start.md) - 5分钟上手教程
-- [完整技术设计](design.md) - WebSocket 协议设计
-- [后端实现方案](backend-deployment.md) - 详细实现文档
-- [API 参考](../api/) - 完整 API 文档
-
-## 🤝 贡献指南
-
-欢迎贡献代码！请遵循以下步骤：
-
-1. Fork 项目
-2. 创建功能分支: `git checkout -b feature/new-feature`
-3. 提交更改: `git commit -am 'Add new feature'`
-4. 推送分支: `git push origin feature/new-feature`
-5. 创建 Pull Request
-
-## 📄 许可证
-
-本项目基于 MIT 许可证开源 - 查看 [LICENSE](../../LICENSE) 文件了解详情。
-
-## 🆘 支持
-
-如需帮助，请：
-
-1. 查看 [快速开始指南](quick-start.md)
-2. 搜索 [GitHub Issues](../../issues)
-3. 创建新的 Issue 描述问题
-4. 参考示例代码和文档
+### 社区支持
+加入我们的开发者社区，与其他开发者交流经验。
 
 ---
 
-**MyAgent WebSocket Server** - 让 AI Agent 部署变得简单高效！ 🚀
+## 📝 文档更新记录
+
+- **v1.3.0** - 添加用户确认机制完整支持
+- **v1.2.0** - 新增LLM_MESSAGE事件支持
+- **v1.1.0** - 添加React、Vue集成指南
+- **v1.0.0** - 基础WebSocket协议文档
+
+---
+
+**快速开始** 👉 选择你感兴趣的文档开始吧！

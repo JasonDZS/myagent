@@ -1,7 +1,9 @@
 from enum import Enum
-from typing import Any, List, Literal, Optional, Union
+from typing import Any
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from pydantic import Field
 
 
 class Role(str, Enum):
@@ -55,16 +57,16 @@ class Message(BaseModel):
     """Represents a chat message in the conversation"""
 
     role: ROLE_TYPE = Field(...)  # type: ignore
-    content: Optional[str] = Field(default=None)
-    tool_calls: Optional[List[ToolCall]] = Field(default=None)
-    name: Optional[str] = Field(default=None)
-    tool_call_id: Optional[str] = Field(default=None)
-    base64_image: Optional[str] = Field(default=None)
+    content: str | None = Field(default=None)
+    tool_calls: list[ToolCall] | None = Field(default=None)
+    name: str | None = Field(default=None)
+    tool_call_id: str | None = Field(default=None)
+    base64_image: str | None = Field(default=None)
 
-    def __add__(self, other) -> List["Message"]:
+    def __add__(self, other) -> list["Message"]:
         """支持 Message + list 或 Message + Message 的操作"""
         if isinstance(other, list):
-            return [self] + other
+            return [self, *other]
         elif isinstance(other, Message):
             return [self, other]
         else:
@@ -72,10 +74,10 @@ class Message(BaseModel):
                 f"unsupported operand type(s) for +: '{type(self).__name__}' and '{type(other).__name__}'"
             )
 
-    def __radd__(self, other) -> List["Message"]:
+    def __radd__(self, other) -> list["Message"]:
         """支持 list + Message 的操作"""
         if isinstance(other, list):
-            return other + [self]
+            return [*other, self]
         else:
             raise TypeError(
                 f"unsupported operand type(s) for +: '{type(other).__name__}' and '{type(self).__name__}'"
@@ -97,9 +99,7 @@ class Message(BaseModel):
         return message
 
     @classmethod
-    def user_message(
-        cls, content: str, base64_image: Optional[str] = None
-    ) -> "Message":
+    def user_message(cls, content: str, base64_image: str | None = None) -> "Message":
         """Create a user message"""
         return cls(role=Role.USER.value, content=content, base64_image=base64_image)
 
@@ -110,14 +110,16 @@ class Message(BaseModel):
 
     @classmethod
     def assistant_message(
-        cls, content: Optional[str] = None, base64_image: Optional[str] = None
+        cls, content: str | None = None, base64_image: str | None = None
     ) -> "Message":
         """Create an assistant message"""
-        return cls(role=Role.ASSISTANT.value, content=content, base64_image=base64_image)
+        return cls(
+            role=Role.ASSISTANT.value, content=content, base64_image=base64_image
+        )
 
     @classmethod
     def tool_message(
-        cls, content: str, name, tool_call_id: str, base64_image: Optional[str] = None
+        cls, content: str, name, tool_call_id: str, base64_image: str | None = None
     ) -> "Message":
         """Create a tool message"""
         return cls(
@@ -131,9 +133,9 @@ class Message(BaseModel):
     @classmethod
     def from_tool_calls(
         cls,
-        tool_calls: List[Any],
-        content: Union[str, List[str]] = "",
-        base64_image: Optional[str] = None,
+        tool_calls: list[Any],
+        content: str | list[str] = "",
+        base64_image: str | None = None,
         **kwargs,
     ):
         """Create ToolCallsMessage from raw tool calls.
@@ -157,7 +159,7 @@ class Message(BaseModel):
 
 
 class Memory(BaseModel):
-    messages: List[Message] = Field(default_factory=list)
+    messages: list[Message] = Field(default_factory=list)
     max_messages: int = Field(default=100)
 
     def add_message(self, message: Message) -> None:
@@ -167,7 +169,7 @@ class Memory(BaseModel):
         if len(self.messages) > self.max_messages:
             self.messages = self.messages[-self.max_messages :]
 
-    def add_messages(self, messages: List[Message]) -> None:
+    def add_messages(self, messages: list[Message]) -> None:
         """Add multiple messages to memory"""
         self.messages.extend(messages)
         # Optional: Implement message limit
@@ -178,65 +180,70 @@ class Memory(BaseModel):
         """Clear all messages"""
         self.messages.clear()
 
-    def get_recent_messages(self, n: int) -> List[Message]:
+    def get_recent_messages(self, n: int) -> list[Message]:
         """Get n most recent messages"""
         return self.messages[-n:]
 
-    def to_dict_list(self) -> List[dict]:
+    def to_dict_list(self) -> list[dict]:
         """Convert messages to list of dicts"""
         return [msg.to_dict() for msg in self.messages]
-    
+
     def clean_incomplete_tool_calls(self) -> None:
         """Clean incomplete tool_calls messages to fix OpenAI API compatibility.
-        
+
         Removes:
         1. Assistant messages with tool_calls that don't have corresponding tool response messages
         2. Orphaned tool messages that don't have a preceding assistant message with tool_calls
-        
+
         This fixes API errors in multi-turn conversations.
         """
         if not self.messages:
             return
-            
+
         # First pass: identify all valid tool_call_ids that have complete chains
         valid_tool_call_ids = set()
-        
+
         for i, msg in enumerate(self.messages):
-            if (msg.role == Role.ASSISTANT.value and 
-                msg.tool_calls is not None and 
-                len(msg.tool_calls) > 0):
-                
+            if (
+                msg.role == Role.ASSISTANT.value
+                and msg.tool_calls is not None
+                and len(msg.tool_calls) > 0
+            ):
                 tool_call_ids = {tc.id for tc in msg.tool_calls}
                 found_responses = set()
-                
+
                 # Check subsequent messages for tool responses
                 j = i + 1
                 while j < len(self.messages):
                     next_msg = self.messages[j]
-                    
-                    if (next_msg.role == Role.TOOL.value and 
-                        next_msg.tool_call_id in tool_call_ids):
+
+                    if (
+                        next_msg.role == Role.TOOL.value
+                        and next_msg.tool_call_id in tool_call_ids
+                    ):
                         found_responses.add(next_msg.tool_call_id)
                     elif next_msg.role in [Role.ASSISTANT.value, Role.USER.value]:
                         break
                     j += 1
-                
+
                 # If all tool calls have responses, mark them as valid
                 if found_responses == tool_call_ids:
                     valid_tool_call_ids.update(tool_call_ids)
-        
+
         # Second pass: keep only messages that are valid
         cleaned_messages = []
-        
+
         for msg in self.messages:
             if msg.role == Role.TOOL.value:
                 # Keep tool messages only if they respond to valid tool calls
                 if msg.tool_call_id in valid_tool_call_ids:
                     cleaned_messages.append(msg)
                 # Otherwise skip orphaned tool messages
-            elif (msg.role == Role.ASSISTANT.value and 
-                  msg.tool_calls is not None and 
-                  len(msg.tool_calls) > 0):
+            elif (
+                msg.role == Role.ASSISTANT.value
+                and msg.tool_calls is not None
+                and len(msg.tool_calls) > 0
+            ):
                 # Keep assistant messages with tool_calls only if all their calls are valid
                 tool_call_ids = {tc.id for tc in msg.tool_calls}
                 if tool_call_ids.issubset(valid_tool_call_ids):
@@ -245,6 +252,6 @@ class Memory(BaseModel):
             else:
                 # Keep all other messages (user, system, assistant without tool_calls)
                 cleaned_messages.append(msg)
-        
+
         # Update messages with cleaned version
         self.messages = cleaned_messages

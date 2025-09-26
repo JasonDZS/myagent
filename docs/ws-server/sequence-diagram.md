@@ -11,16 +11,16 @@ sequenceDiagram
     participant LLM as 大语言模型
 
     Note over F,LLM: 1. 建立连接和创建会话
-    
+
     F->>WS: WebSocket连接请求
     Note right of F: ws://localhost:8080
-    
+
     WS-->>F: system.connected
     Note left of WS: ⚠️ NO session_id (expected)<br/>{"event":"system.connected",<br/>"content":"Connected to MyAgent WebSocket Server",<br/>"metadata":{"connection_id":"conn_123"}}
-    
+
     F->>WS: user.create_session
     Note right of F: {"event":"user.create_session",<br/>"timestamp":"2024-01-01T12:00:00Z",<br/>"content":"create_session"}
-    
+
     WS->>A: 创建Agent实例
     WS-->>F: agent.session_created
     Note left of WS: ✅ HAS session_id<br/>{"event":"agent.session_created",<br/>"session_id":"sess_abc123",<br/>"content":"会话创建成功",<br/>"metadata":{"agent_name":"weather-assistant"}}
@@ -31,16 +31,20 @@ sequenceDiagram
     Note right of F: {"session_id":"sess_abc123",<br/>"event":"user.message",<br/>"content":"北京今天的天气怎么样？"}
 
     WS->>A: 处理用户消息
-    
+
     A-->>WS: agent.thinking
     WS-->>F: agent.thinking
     Note left of WS: ✅ HAS session_id<br/>{"event":"agent.thinking",<br/>"session_id":"sess_abc123",<br/>"content":"正在分析您的问题...",<br/>"metadata":{"step":1}}
 
     A->>LLM: 分析用户意图
     Note right of A: messages: [<br/>{"role":"system","content":"你是天气助手..."},<br/>{"role":"user","content":"北京今天的天气怎么样？"}]
-    
+
     LLM-->>A: 返回工具调用决策
     Note left of LLM: tool_calls: [{"function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]
+
+    A-->>WS: agent.llm_message (第1次LLM调用后)
+    WS-->>F: agent.llm_message
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.llm_message",<br/>"session_id":"sess_abc123",<br/>"content":{"messages":[...],"total_messages":3},<br/>"metadata":{"agent_name":"toolcall","agent_state":"RUNNING"}}
 
     A-->>WS: agent.tool_call
     WS-->>F: agent.tool_call
@@ -48,7 +52,7 @@ sequenceDiagram
 
     A->>T: 执行天气查询工具
     Note right of A: get_weather(city="北京")
-    
+
     T-->>A: 返回天气数据
     Note left of T: {"temp":"25°C","desc":"晴朗","humidity":"45%"}
 
@@ -62,6 +66,10 @@ sequenceDiagram
     LLM-->>A: 返回回答
     Note left of LLM: "根据最新数据，北京今天天气晴朗，气温25°C，湿度45%。适合外出活动。"
 
+    A-->>WS: agent.llm_message (第2次LLM调用后)
+    WS-->>F: agent.llm_message
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.llm_message",<br/>"session_id":"sess_abc123",<br/>"content":{"messages":[...],"total_messages":5},<br/>"metadata":{"agent_name":"toolcall","agent_state":"RUNNING"}}
+
     A-->>WS: agent.final_answer
     WS-->>F: agent.final_answer
     Note left of WS: ✅ HAS session_id<br/>{"event":"agent.final_answer",<br/>"session_id":"sess_abc123",<br/>"content":"根据最新数据，北京今天天气晴朗，气温25°C，湿度45%。适合外出活动。"}
@@ -72,7 +80,7 @@ sequenceDiagram
     Note right of F: {"session_id":"sess_abc123",<br/>"event":"user.message",<br/>"content":"请总结一下我们的对话"}
 
     WS->>A: 处理总结请求
-    
+
     A-->>WS: agent.thinking
     WS-->>F: agent.thinking
     Note left of WS: {"event":"agent.thinking",<br/>"session_id":"sess_abc123",<br/>"content":"开始处理您的请求..."}
@@ -116,13 +124,17 @@ sequenceDiagram
     WS-->>F: agent.partial_answer
     Note left of WS: {"event":"agent.partial_answer",<br/>"session_id":"sess_abc123",<br/>"content":"",<br/>"metadata":{"is_streaming":true,"is_final":true,"total_length":70}}
 
+    A-->>WS: agent.llm_message (第3次LLM调用后-流式总结)
+    WS-->>F: agent.llm_message
+    Note left of WS: ✅ HAS session_id<br/>{"event":"agent.llm_message",<br/>"session_id":"sess_abc123",<br/>"content":{"messages":[...],"total_messages":7},<br/>"metadata":{"agent_name":"toolcall","agent_state":"RUNNING"}}
+
     A-->>WS: agent.final_answer
     WS-->>F: agent.final_answer
     Note left of WS: {"event":"agent.final_answer",<br/>"session_id":"sess_abc123",<br/>"content":"完整的总结内容..."}
 
-    Note over F,LLM: 4. LLM_MESSAGE 事件（可选，需环境变量启用）
+    Note over F,LLM: 4. 特殊工具完成时的最终 LLM_MESSAGE 事件（可选，需环境变量启用）
 
-    A-->>WS: agent.llm_message
+    A-->>WS: agent.llm_message (最终完成)
     WS-->>F: agent.llm_message
     Note left of WS: ✅ HAS session_id<br/>{"event":"agent.llm_message",<br/>"session_id":"sess_abc123",<br/>"content":{"messages":[...],"total_messages":8},<br/>"metadata":{"agent_name":"toolcall","agent_state":"FINISHED"}}
 
@@ -144,7 +156,7 @@ sequenceDiagram
     Note right of F: {"session_id":"sess_abc123",<br/>"event":"user.cancel",<br/>"content":"cancel"}
 
     WS->>A: 取消当前执行
-    
+
     A-->>WS: agent.interrupted
     WS-->>F: agent.interrupted
     Note left of WS: {"event":"agent.interrupted",<br/>"session_id":"sess_abc123",<br/>"content":"执行已取消"}
@@ -160,9 +172,9 @@ sequenceDiagram
     Note over F,LLM: 8. 连接关闭
 
     F->>WS: WebSocket断开连接
-    
+
     WS->>A: 清理会话资源
-    
+
     WS-->>F: connection closed
     Note left of WS: WebSocket连接已关闭
 ```
@@ -172,7 +184,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant 前端 as 🌐 前端
-    participant 后端 as 🔧 WebSocket服务器  
+    participant 后端 as 🔧 WebSocket服务器
     participant Agent as 🤖 Agent
     participant 工具 as 🛠️ 工具
 
@@ -184,28 +196,28 @@ sequenceDiagram
     后端-->>前端: ✅ 会话创建成功
 
     前端->>后端: 💬 "北京天气怎么样？"
-    
+
     后端->>Agent: 处理消息
     Agent-->>后端: 💭 "正在分析问题..."
     后端-->>前端: 💭 思考中
-    
+
     Agent->>工具: 🔍 查询北京天气
     工具-->>Agent: 🌤️ "25°C，晴朗，45%湿度"
-    
+
     Agent-->>后端: 🔧 工具调用完成
     后端-->>前端: 📊 工具结果
-    
+
     Agent-->>后端: 🎯 "北京今天25°C，晴朗，适合外出"
     后端-->>前端: ✨ 最终回答
 
     前端->>后端: 💬 "请总结对话"
-    
+
     Agent-->>后端: 🌊 开始流式回答
     后端-->>前端: 📄 "让我总结一下..."
     后端-->>前端: 📄 "您询问了北京天气..."
     后端-->>前端: 📄 "我提供了准确数据..."
     后端-->>前端: 🏁 流式完成
-    
+
     后端-->>前端: ✨ 总结完成
 ```
 
@@ -221,20 +233,20 @@ sequenceDiagram
 
     F->>WS: 无效JSON消息
     Note right of F: "invalid json message"
-    
+
     WS-->>F: system.error
     Note left of WS: {"event":"system.error",<br/>"content":"Invalid JSON"}
 
     F->>WS: 无效会话ID
     Note right of F: {"session_id":"non_existent",<br/>"event":"user.message"}
-    
-    WS-->>F: agent.error  
+
+    WS-->>F: agent.error
     Note left of WS: {"event":"agent.error",<br/>"content":"会话不存在"}
 
     F->>WS: 正常消息
     WS->>A: Agent处理出错
     Note right of WS: 内部异常
-    
+
     A-->>WS: 执行异常
     WS-->>F: agent.error
     Note left of WS: {"event":"agent.error",<br/>"content":"Agent执行出错: xxx"}
@@ -243,7 +255,7 @@ sequenceDiagram
     WS->>A: 处理消息
     A->>A: 工具执行失败
     Note right of A: 网络超时或工具错误
-    
+
     A-->>WS: agent.tool_result
     WS-->>F: agent.tool_result
     Note left of WS: {"event":"agent.tool_result",<br/>"content":"工具执行失败: 超时",<br/>"metadata":{"status":"failed"}}
@@ -264,27 +276,27 @@ sequenceDiagram
 
     Note over WS: 网络异常 / 服务器重启
     WS--X F: 连接中断
-    
+
     Note over F: 检测到连接断开
     F->>F: 等待重连 (1秒)
-    
+
     F->>WS: 尝试重连
     Note right of F: 指数退避重试
-    
+
     WS--XF: 重连失败
-    
+
     F->>F: 等待重连 (2秒)
     F->>WS: 再次尝试重连
-    
+
     WS-->>F: 重连成功
     Note left of WS: system.connected
-    
+
     F->>WS: 恢复会话
     Note right of F: user.reconnect + session_id
-    
+
     WS->>A: 恢复会话状态
     WS-->>F: 会话恢复成功
-    
+
     F->>WS: 继续正常对话
 ```
 
@@ -300,18 +312,18 @@ sequenceDiagram
 
     F->>B: agent.partial_answer (片段1)
     Note right of F: "根据最新数据"
-    
-    F->>B: agent.partial_answer (片段2)  
+
+    F->>B: agent.partial_answer (片段2)
     Note right of F: "北京今天天气"
-    
+
     F->>B: agent.partial_answer (片段3)
     Note right of F: "25°C，晴朗"
-    
+
     Note over B: 50ms内收集多个片段
-    
+
     B->>UI: 批量更新
     Note left of B: 合并: "根据最新数据北京今天天气25°C，晴朗"
-    
+
     UI->>UI: 一次性渲染更新
     Note over UI: 减少DOM操作，提升性能
 ```
@@ -328,25 +340,25 @@ sequenceDiagram
 
     M->>W: 建立连接
     Note right of M: 检测网络类型 (WiFi/4G/5G)
-    
+
     W-->>M: 连接成功
-    
+
     Note over M: App进入后台
     M->>M: 暂停心跳
     Note over M: 保持WebSocket连接但降低活动
 
     Note over M: 网络切换 (WiFi→4G)
     M-XW: 连接中断
-    
+
     M->>M: 检测网络变化
     M->>W: 快速重连
-    
+
     W-->>M: 重连成功
     M->>W: 恢复会话
-    
+
     Note over M: App回到前台
     M->>M: 恢复正常心跳频率
-    
+
     M->>W: 继续正常通信
 ```
 
@@ -368,7 +380,7 @@ sequenceDiagram
 
 **✅ 包含 session_id 的事件** (标记为 "HAS session_id"):
 - `agent.session_created` - 会话创建确认
-- `agent.thinking` - Agent 思考状态  
+- `agent.thinking` - Agent 思考状态
 - `agent.tool_call` - 工具调用开始
 - `agent.tool_result` - 工具调用结果
 - `agent.partial_answer` - 流式回答片段
@@ -391,14 +403,19 @@ sequenceDiagram
 
 这个时序图展示了完整的前后端交互流程，包含了实际的消息内容格式和session_id覆盖情况，方便前端开发者理解和实现。
 
-### 新增LLM_MESSAGE事件说明:
+### LLM_MESSAGE事件说明:
 
 **LLM_MESSAGE事件特点:**
 - **可选功能**: 需要设置环境变量 `SEND_LLM_MESSAGE=true` 才会发送
-- **触发时机**: Agent执行完成后，在设置状态为FINISHED前发送
+- **触发时机**: **每次 LLM 调用后立即发送**，包括：
+  - Agent.think() 方法中的 llm.ask_tool() 调用后
+  - _generate_regular_summary() 方法中的 llm.ask() 调用后  
+  - _stream_llm_with_websocket() 方法中的流式调用完成后
+  - 特殊工具执行完成时（保持原有行为）
 - **内容格式**: 包含完整的对话历史记录，格式与OpenAI ChatGPT API兼容
-- **用途**: 前端可以获取完整对话记录用于显示、分析或存储
-- **性能考虑**: 由于包含完整消息历史，数据量可能较大，建议按需启用
+- **用途**: 前端可以实时获取完整对话记录用于显示、分析或存储
+- **性能考虑**: 由于每次LLM调用后都发送且包含完整消息历史，数据量较大，建议按需启用
+- **状态跟踪**: metadata中的agent_state可能为RUNNING（调用进行中）或FINISHED（任务完成）
 
 **环境变量配置:**
 ```bash

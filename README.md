@@ -1,37 +1,146 @@
-# myagent
+# MyAgent
 
-`myagent` 提供了一个轻量级的工具增强 LLM agent 框架。下面的示例展示了如何结合 `create_react_agent` 与 DuckDuckGo 网络搜索工具，实现一个能够联网检索的智能体。
+MyAgent is a lightweight toolkit for building tool-aware LLM agents with comprehensive tracing capabilities. It provides a ReAct-style agent framework with WebSocket server support and detailed execution tracing.
 
-## 快速开始
+## Features
 
-1. 安装依赖并创建虚拟环境：
+- **ReAct Agent Framework**: Implements reasoning and acting patterns for intelligent decision-making
+- **Tool System**: Extensible tool architecture with async execution support
+- **Comprehensive Tracing**: Detailed execution tracing with SQLite persistence and web-based viewer
+- **WebSocket Server**: Real-time agent communication with session management
+- **Built-in Tools**: Web search, SQL operations, and user confirmation workflows
+- **CLI Interface**: Easy deployment and management via command-line tools
+
+## Quick Start
+
+1. Install dependencies and create virtual environment:
 
    ```bash
    uv sync
    ```
 
-2. 复制示例环境文件并根据需要修改：
+2. Copy example environment file and configure:
 
    ```bash
    cp .env.example .env
-   # 编辑 .env，填入实际的 OPENAI_API_KEY 等参数
+   # Edit .env to add your OPENAI_API_KEY and other parameters
    ```
 
-   （或直接导出临时环境变量，例如：）
+   Or export environment variables directly:
 
    ```bash
    export OPENAI_API_KEY="your-key"
-   export OPENAI_API_BASE="https://api.openai.com/v1"  # 可选
+   export OPENAI_API_BASE="https://api.openai.com/v1"  # optional
    ```
 
-3. 运行示例：
+3. Run examples:
 
    ```bash
+   # Web search agent
    uv run python examples/web_search.py
+   
+   # WebSocket weather agent
+   uv run python examples/ws_weather_agent.py
+   
+   # MySQL Text-to-SQL agent
+   uv run python examples/mysql_text2sql.py
    ```
 
-   示例通过 [`duckduckgo-search`](https://pypi.org/project/duckduckgo-search/) 抓取 DuckDuckGo 搜索结果，再由 agent 组织输出。支持在 `.env` 或命令行中配置代理、Region 等选项，应对不同的网络环境。
+## WebSocket Server
 
-## 示例工具说明
+Start a WebSocket server with an agent:
 
-`examples/web_search.py` 中定义的 `DuckDuckGoSearchTool` 继承自 `BaseTool`，使用 `AsyncDDGS` 异步抓取搜索摘要并格式化为对话消息。通过 `create_react_agent` 将该工具注入智能体后，LLM 可以根据需要触发网络搜索，实现 LangChain 风格的 ReAct 能力。示例还展示了如何通过工具参数自定义最大返回条数、地区等行为。
+```bash
+# Basic usage
+uv run python -m myagent.cli.server server <agent_file.py> --host <host> --port <port>
+
+# Example with weather agent
+uv run python -m myagent.cli.server server examples/ws_weather_agent.py --port 8889
+```
+
+## Architecture
+
+### Core Components
+
+- **Agent Framework**: Base agents, ReAct implementation, and factory functions
+- **Tool System**: Extensible tool interface with built-in implementations
+- **Tracing System**: Flat architecture with Think and Tool records
+- **WebSocket Server**: Real-time communication with structured events
+- **CLI Tools**: Server deployment and management utilities
+
+### Example Tools
+
+The framework includes several example tools:
+
+- **DuckDuckGoSearchTool**: Web search using DuckDuckGo API
+- **WeatherTool**: Weather information retrieval  
+- **MySQLTool**: Database operations with text-to-SQL conversion
+- **TerminateTool**: Standard agent termination
+
+### Tracing and Analysis
+
+MyAgent provides comprehensive execution tracing:
+
+```bash
+# Start trace viewer server
+python trace_server.py
+
+# View traces in browser at http://localhost:8000
+```
+
+## Development
+
+### Creating Custom Tools
+
+```python
+from myagent.tool import BaseTool, ToolResult
+
+class CustomTool(BaseTool):
+    name: str = "custom_tool"
+    description: str = "Description of what this tool does"
+    user_confirm: bool = False  # Set True for dangerous operations
+    
+    async def execute(self, **kwargs) -> ToolResult:
+        # Your tool implementation
+        return ToolResult(
+            success=True,
+            result="Tool output",
+            metadata={"key": "value"}
+        )
+```
+
+### Creating Agents
+
+```python
+from myagent import create_react_agent
+
+# Create agent with custom tools
+agent = create_react_agent(
+    tools=[CustomTool()],
+    llm_config={
+        "model": "gpt-4",
+        "api_key": "your-api-key"
+    }
+)
+
+# Run agent
+result = await agent.run("Your query here")
+```
+
+## Configuration
+
+Configure the framework through environment variables or `.env` file:
+
+```bash
+# Required
+OPENAI_API_KEY=your-openai-api-key
+
+# Optional
+OPENAI_API_BASE=https://api.openai.com/v1
+DUCKDUCKGO_PROXY=your-proxy-url
+DUCKDUCKGO_REGION=us-en
+```
+
+## License
+
+MIT License - see LICENSE file for details.

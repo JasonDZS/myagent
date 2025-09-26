@@ -1,14 +1,19 @@
 """Factory helpers for constructing agents."""
-from typing import Optional, Sequence, Union, cast
 
+from collections.abc import Sequence
+from typing import cast
+
+from myagent.llm import LLM
+from myagent.schema import TOOL_CHOICE_TYPE
+from myagent.schema import ToolChoice
+from myagent.tool import BaseTool
+from myagent.tool import Terminate
+from myagent.tool import ToolCollection
 from .toolcall import ToolCallAgent
-from ..llm import LLM
-from ..schema import TOOL_CHOICE_TYPE, ToolChoice
-from ..tool import BaseTool, Terminate, ToolCollection
 
 
 def _ensure_tool_collection(
-    tools: Optional[Union[Sequence[BaseTool], ToolCollection]]
+    tools: Sequence[BaseTool] | ToolCollection | None,
 ) -> ToolCollection:
     if isinstance(tools, ToolCollection):
         collection = tools
@@ -23,13 +28,13 @@ def _ensure_tool_collection(
 def create_toolcall_agent(
     *,
     name: str = "toolcall-agent",
-    llm: Optional[LLM] = None,
-    tools: Optional[Union[Sequence[BaseTool], ToolCollection]] = None,
-    system_prompt: Optional[str] = None,
-    next_step_prompt: Optional[str] = None,
-    tool_choice: Optional[Union[ToolChoice, TOOL_CHOICE_TYPE]] = ToolChoice.AUTO,
-    max_steps: Optional[int] = None,
-    max_observe: Optional[int] = None,
+    llm: LLM | None = None,
+    tools: Sequence[BaseTool] | ToolCollection | None = None,
+    system_prompt: str | None = None,
+    next_step_prompt: str | None = None,
+    tool_choice: ToolChoice | TOOL_CHOICE_TYPE | None = ToolChoice.AUTO,
+    max_steps: int | None = None,
+    max_observe: int | None = None,
     **extra_fields,
 ) -> ToolCallAgent:
     """Create a tool-aware agent that implements the ReAct pattern.
@@ -59,15 +64,13 @@ def create_toolcall_agent(
 
     if tool_choice is None:
         tool_choice_value: TOOL_CHOICE_TYPE = cast(
-            TOOL_CHOICE_TYPE, ToolChoice.AUTO.value
+            "TOOL_CHOICE_TYPE", ToolChoice.AUTO.value
         )
     elif isinstance(tool_choice, ToolChoice):
-        tool_choice_value = cast(TOOL_CHOICE_TYPE, tool_choice.value)
+        tool_choice_value = cast("TOOL_CHOICE_TYPE", tool_choice.value)
     else:
         try:
-            tool_choice_value = cast(
-                TOOL_CHOICE_TYPE, ToolChoice(tool_choice).value
-            )
+            tool_choice_value = cast("TOOL_CHOICE_TYPE", ToolChoice(tool_choice).value)
         except ValueError as exc:
             raise ValueError(f"Unsupported tool choice: {tool_choice}") from exc
 
@@ -90,9 +93,9 @@ def create_toolcall_agent(
     agent_kwargs.update(extra_fields)
 
     # If enable_tracing is False, disable tracing for all tools in the collection
-    if not agent_kwargs.get('enable_tracing', True):
-        for tool_name, tool_instance in tool_collection.tool_map.items():
-            if hasattr(tool_instance, 'enable_tracing'):
+    if not agent_kwargs.get("enable_tracing", True):
+        for tool_instance in tool_collection.tool_map.values():
+            if hasattr(tool_instance, "enable_tracing"):
                 tool_instance.enable_tracing = False
 
     return ToolCallAgent(**agent_kwargs)
@@ -101,20 +104,20 @@ def create_toolcall_agent(
 def create_react_agent(
     *,
     name: str = "react-agent",
-    llm: Optional[LLM] = None,
-    tools: Optional[Union[Sequence[BaseTool], ToolCollection]] = None,
-    system_prompt: Optional[str] = None,
-    next_step_prompt: Optional[str] = None,
-    tool_choice: Optional[Union[ToolChoice, TOOL_CHOICE_TYPE]] = ToolChoice.AUTO,
-    max_steps: Optional[int] = None,
-    max_observe: Optional[int] = None,
+    llm: LLM | None = None,
+    tools: Sequence[BaseTool] | ToolCollection | None = None,
+    system_prompt: str | None = None,
+    next_step_prompt: str | None = None,
+    tool_choice: ToolChoice | TOOL_CHOICE_TYPE | None = ToolChoice.AUTO,
+    max_steps: int | None = None,
+    max_observe: int | None = None,
     **extra_fields,
 ) -> ToolCallAgent:
     """Create a tool-aware ReAct agent instance.
-    
+
     This function is an alias for create_toolcall_agent() to maintain backward compatibility.
     The returned agent implements the ReAct (Reason + Act) pattern using tool calls.
-    
+
     Args:
         name: Agent identifier.
         llm: Concrete ``LLM`` instance to use.
@@ -131,7 +134,7 @@ def create_react_agent(
 
     Notes:
         Always ensures the ``terminate`` tool is available so the agent can finish runs.
-        
+
     Deprecated:
         Use create_toolcall_agent() instead for better clarity.
     """
@@ -144,5 +147,5 @@ def create_react_agent(
         tool_choice=tool_choice,
         max_steps=max_steps,
         max_observe=max_observe,
-        **extra_fields
+        **extra_fields,
     )

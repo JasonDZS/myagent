@@ -18,40 +18,40 @@ sequenceDiagram
     User->>Main: 用户问题 (e.g., "显示用户表的10条用户数据")
     Main->>TraceManager: 创建 TraceMetadata
     Main->>Agent: create_react_agent(tools, system_prompt)
-    
+
     Main->>Agent: run(question)
     Agent->>TraceManager: 开始执行追踪
-    
+
     Note over Agent: Step 1: 思考阶段
     Agent->>Agent: think() - 分析问题需求
-    
+
     Note over Agent: Step 2: 行动阶段 - 获取表结构
     Agent->>SchemaTool: mysql_schema()
     SchemaTool->>MySQL: SHOW TABLES
     MySQL-->>SchemaTool: 返回表列表
     SchemaTool-->>Agent: 表结构信息
-    
+
     Note over Agent: Step 3: 继续获取特定表结构
     Agent->>SchemaTool: mysql_schema(table="users")
     SchemaTool->>MySQL: SELECT column info FROM information_schema
     MySQL-->>SchemaTool: 列详细信息
     SchemaTool-->>Agent: 用户表列信息
-    
+
     Note over Agent: Step 4: 探索性查询
     Agent->>QueryTool: mysql_query("SELECT COUNT(*) FROM users")
     QueryTool->>MySQL: 执行只读查询
     MySQL-->>QueryTool: 查询结果
     QueryTool-->>Agent: 格式化的结果表格
-    
+
     Note over Agent: Step 5: 验证最终SQL
     Agent->>ValidateTool: mysql_validate_sql("SELECT * FROM users LIMIT 10")
     ValidateTool->>MySQL: EXPLAIN SELECT查询
     MySQL-->>ValidateTool: 执行计划
     ValidateTool-->>Agent: 验证成功 + 执行计划
-    
+
     Agent->>TraceManager: 记录执行完成
     Agent-->>Main: 返回最终响应
-    
+
     Main->>Main: 显示执行历史和最终SQL
     Main->>TraceManager: save_traces_to_json()
     TraceManager-->>Main: 导出追踪数据
@@ -69,31 +69,31 @@ sequenceDiagram
 
     loop 每个执行步骤 (max_steps=15)
         Agent->>Trace: 开始步骤追踪
-        
+
         Note over Agent: Think Phase
         Agent->>Agent: think() - 决策是否需要行动
         Agent->>Memory: 获取对话历史
         Agent->>LLM: 发送思考提示
         LLM-->>Agent: 返回思考结果
-        
+
         alt 需要使用工具
             Note over Agent: Act Phase
             Agent->>Agent: act() - 选择并执行工具
             Agent->>LLM: 发送工具调用请求
             LLM-->>Agent: 返回工具调用指令
-            
+
             Agent->>Tools: 执行指定工具
             Tools->>Trace: 工具执行追踪
             Tools-->>Agent: 工具执行结果
-            
+
             Agent->>Memory: 更新对话记录
         else 完成任务
             Agent->>Agent: 设置状态为FINISHED
             break
         end
-        
+
         Agent->>Trace: 记录步骤完成
-        
+
         alt 达到最大步数
             Agent->>Agent: 强制终止
             break
@@ -155,24 +155,24 @@ sequenceDiagram
     Note over Agent: 执行开始
     Agent->>TraceManager: trace(name, request, metadata)
     TraceManager->>Storage: 创建追踪记录
-    
+
     loop 每个步骤/工具调用
         Agent->>TraceManager: run(name, run_type, inputs)
         TraceManager->>Storage: 记录运行详情
         Note over Storage: 存储输入、输出、时间戳、错误等
         TraceManager-->>Agent: 返回运行上下文
     end
-    
+
     Note over Agent: 执行完成
     Agent->>TraceManager: 完成追踪
     TraceManager->>Storage: 更新最终状态
-    
+
     Note over Agent: 导出追踪数据
     Agent->>Exporter: export_traces_to_json()
     Exporter->>Storage: 查询所有追踪数据
     Storage-->>Exporter: 返回追踪记录
     Exporter->>File: 写入JSON文件
-    
+
     Agent->>Exporter: export_trace_summary()
     Exporter->>Storage: 生成统计信息
     Exporter->>File: 写入Markdown摘要
@@ -189,12 +189,12 @@ sequenceDiagram
 
     Agent->>Tool: 执行SQL请求
     Tool->>Safety: _ensure_read_only(sql)
-    
+
     alt SQL包含危险操作
         Safety-->>Tool: 返回错误信息
         Tool-->>Agent: ToolResult(error="Disallowed keyword detected")
     else 多语句查询
-        Safety-->>Tool: 返回错误信息  
+        Safety-->>Tool: 返回错误信息
         Tool-->>Agent: ToolResult(error="Multiple statements not allowed")
     else 锁定子句
         Safety-->>Tool: 返回错误信息
@@ -202,7 +202,7 @@ sequenceDiagram
     else SQL安全
         Safety-->>Tool: 通过安全检查
         Tool->>DB: 执行查询
-        
+
         alt 数据库错误
             DB-->>Tool: 抛出异常
             Tool-->>Agent: ToolResult(error="Query failed: ...")

@@ -1,9 +1,12 @@
 """Collection classes for managing multiple tools."""
-from typing import Any, Dict, List
 
-from ..exceptions import ToolError
-from ..logger import logger
-from .base_tool import BaseTool, ToolFailure, ToolResult
+from typing import Any
+
+from myagent.exceptions import ToolError
+from myagent.logger import logger
+from .base_tool import BaseTool
+from .base_tool import ToolFailure
+from .base_tool import ToolResult
 
 
 class ToolCollection:
@@ -19,11 +22,11 @@ class ToolCollection:
     def __iter__(self):
         return iter(self.tools)
 
-    def to_params(self) -> List[Dict[str, Any]]:
+    def to_params(self) -> list[dict[str, Any]]:
         return [tool.to_param() for tool in self.tools]
 
     async def execute(
-        self, *, name: str, tool_input: Dict[str, Any] = None
+        self, *, name: str, tool_input: dict[str, Any] | None = None
     ) -> ToolResult:
         tool = self.tool_map.get(name)
         if not tool:
@@ -34,7 +37,7 @@ class ToolCollection:
         except ToolError as e:
             return ToolFailure(error=e.message)
 
-    async def execute_all(self) -> List[ToolResult]:
+    async def execute_all(self) -> list[ToolResult]:
         """Execute all tools in the collection sequentially."""
         results = []
         for tool in self.tools:

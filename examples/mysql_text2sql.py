@@ -6,26 +6,23 @@ import argparse
 import asyncio
 import os
 import re
+from collections.abc import Iterable
+from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Sequence
-
-from pydantic import Field
+from typing import Any
+from typing import ClassVar
 
 import pymysql
+from pydantic import Field
 from pymysql.cursors import DictCursor
 
 from myagent import create_react_agent
-from myagent.tool.base_tool import BaseTool, ToolResult
-from myagent.trace import (
-    TraceManager,
-    TraceQueryEngine,
-    TraceExporter,
-    TraceMetadata,
-    get_trace_manager
-)
-
+from myagent.tool.base_tool import BaseTool
+from myagent.tool.base_tool import ToolResult
+from myagent.trace import TraceExporter
+from myagent.trace import TraceQueryEngine
+from myagent.trace import get_trace_manager
 
 REQUIRED_ENV_VARS = (
     "MYSQL_HOST",
@@ -77,7 +74,7 @@ def _connect(config: MySQLConfig) -> pymysql.connections.Connection:
     )
 
 
-def _ensure_read_only(sql: str) -> Optional[str]:
+def _ensure_read_only(sql: str) -> str | None:
     normalized = sql.strip().lower()
     disallowed_pattern = re.compile(
         r"(?<![a-z0-9_])(insert|update|delete|drop|alter|create|truncate|replace|grant|revoke|call|merge|handler|load|rename|lock|unlock)(?![a-z0-9_])"
@@ -96,15 +93,15 @@ def _format_table(
     headers: Sequence[str],
     rows: Sequence[Sequence[Any]],
     *,
-    total_rows: Optional[int] = None,
+    total_rows: int | None = None,
     truncated: bool = False,
 ) -> str:
     if not rows:
         return "No rows returned."
 
-    stringified: List[List[str]] = []
-    for row in rows:
-        stringified.append(["NULL" if value is None else str(value) for value in row])
+    stringified: list[list[str]] = [
+        ["NULL" if value is None else str(value) for value in row] for row in rows
+    ]
 
     widths = [len(header) for header in headers]
     for row in stringified:
@@ -118,7 +115,7 @@ def _format_table(
     separator_line = "-+-".join("-" * width for width in widths)
     row_lines = [_format_line(row) for row in stringified]
 
-    footer_parts: List[str] = []
+    footer_parts: list[str] = []
     if total_rows is not None:
         footer_parts.append(f"rows={total_rows}")
     if truncated:
@@ -131,7 +128,7 @@ def _format_table(
 class MySQLSchemaTool(BaseTool):
     name: str = "mysql_schema"
     description: str = "Inspect table structure from the connected MySQL database."
-    parameters: Dict[str, Any] = {
+    parameters: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
             "table": {
@@ -141,17 +138,21 @@ class MySQLSchemaTool(BaseTool):
         },
     }
 
-    async def execute(self, table: Optional[str] = None) -> ToolResult:
+    async def execute(self, table: str | None = None) -> ToolResult:
         config = _load_mysql_config()
 
         def _inspect_schema() -> str:
             try:
-                with closing(_connect(config)) as connection, closing(connection.cursor()) as cursor:
+                with (
+                    closing(_connect(config)) as connection,
+                    closing(connection.cursor()) as cursor,
+                ):
                     if not table:
                         cursor.execute("SHOW TABLES")
                         tables = [next(iter(row.values())) for row in cursor.fetchall()]
                         return (
-                            "Available tables:\n" + "\n".join(f"- {name}" for name in tables)
+                            "Available tables:\n"
+                            + "\n".join(f"- {name}" for name in tables)
                             if tables
                             else "No tables found in the current database."
                         )
@@ -169,7 +170,7 @@ class MySQLSchemaTool(BaseTool):
                     )
                     columns = cursor.fetchall()
                     print(f"Found {len(columns)} columns")
-                    
+
                     if not columns:
                         return f"Table '{table}' does not exist in database '{config.database}'."
 
@@ -177,14 +178,22 @@ class MySQLSchemaTool(BaseTool):
                     for idx, col in enumerate(columns):
                         if idx == 0:  # Debug: print keys for first column
                             print(f"Column keys available: {list(col.keys())}")
-                        
+
                         # Handle both uppercase and lowercase column names from information_schema
-                        column_name = col.get("column_name") or col.get("COLUMN_NAME", "unknown")
-                        column_type = col.get("column_type") or col.get("COLUMN_TYPE", "unknown")
-                        is_nullable = col.get("is_nullable") or col.get("IS_NULLABLE", "unknown")
+                        column_name = col.get("column_name") or col.get(
+                            "COLUMN_NAME", "unknown"
+                        )
+                        column_type = col.get("column_type") or col.get(
+                            "COLUMN_TYPE", "unknown"
+                        )
+                        is_nullable = col.get("is_nullable") or col.get(
+                            "IS_NULLABLE", "unknown"
+                        )
                         column_key = col.get("column_key") or col.get("COLUMN_KEY", "")
-                        column_comment = col.get("column_comment") or col.get("COLUMN_COMMENT", "")
-                        
+                        column_comment = col.get("column_comment") or col.get(
+                            "COLUMN_COMMENT", ""
+                        )
+
                         nullable = "NULLABLE" if is_nullable == "YES" else "NOT NULL"
                         key = f" {column_key}" if column_key else ""
                         comment = f" -- {column_comment}" if column_comment else ""
@@ -201,18 +210,23 @@ class MySQLSchemaTool(BaseTool):
 
         try:
             result = await asyncio.to_thread(_inspect_schema)
-            print(f"Final result from _inspect_schema: {repr(result)}")
-            
+            print(f"Final result from _inspect_schema: {result!r}")
+
             if result is None:
-                return ToolResult(error="Schema inspection returned None - unexpected result")
-            
+                return ToolResult(
+                    error="Schema inspection returned None - unexpected result"
+                )
+
             return ToolResult(
                 output=result,
-                system=f"Schema inspection completed for {'table: ' + table if table else 'all tables'}"
+                system=f"Schema inspection completed for {'table: ' + table if table else 'all tables'}",
             )
         except Exception as exc:  # pragma: no cover - depends on external DB
             import traceback
-            error_detail = f"Schema inspection failed: {exc}\nTraceback: {traceback.format_exc()}"
+
+            error_detail = (
+                f"Schema inspection failed: {exc}\nTraceback: {traceback.format_exc()}"
+            )
             print(f"Exception in execute: {error_detail}")
             return ToolResult(error=error_detail)
 
@@ -220,7 +234,7 @@ class MySQLSchemaTool(BaseTool):
 class MySQLQueryTool(BaseTool):
     name: str = "mysql_query"
     description: str = "Execute a read-only SQL query against the MySQL database and return the results."
-    parameters: Dict[str, Any] = {
+    parameters: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
             "sql": {
@@ -237,8 +251,8 @@ class MySQLQueryTool(BaseTool):
         },
         "required": ["sql"],
     }
-    last_sql: Optional[str] = Field(default=None, exclude=True)
-    executed_sql: List[str] = Field(default_factory=list, exclude=True)
+    last_sql: str | None = Field(default=None, exclude=True)
+    executed_sql: list[str] = Field(default_factory=list, exclude=True)
     output_char_limit: int = Field(default=2000, exclude=True)
     user_confirm: bool = Field(default=True, exclude=True)
 
@@ -258,15 +272,24 @@ class MySQLQueryTool(BaseTool):
         config = _load_mysql_config()
 
         def _run_query() -> str:
-            with closing(_connect(config)) as connection, closing(connection.cursor()) as cursor:
+            with (
+                closing(_connect(config)) as connection,
+                closing(connection.cursor()) as cursor,
+            ):
                 cursor.execute(stripped_sql)
                 rows = cursor.fetchmany(size=max_rows)
                 total_rows = cursor.rowcount if cursor.rowcount != -1 else None
-                headers = [col[0] for col in cursor.description] if cursor.description else []
+                headers = (
+                    [col[0] for col in cursor.description] if cursor.description else []
+                )
 
-            data_rows: List[Sequence[Any]] = [tuple(row.values()) for row in rows]
-            truncated = len(data_rows) == max_rows and (total_rows is None or total_rows > max_rows)
-            return _format_table(headers, data_rows, total_rows=total_rows, truncated=truncated)
+            data_rows: list[Sequence[Any]] = [tuple(row.values()) for row in rows]
+            truncated = len(data_rows) == max_rows and (
+                total_rows is None or total_rows > max_rows
+            )
+            return _format_table(
+                headers, data_rows, total_rows=total_rows, truncated=truncated
+            )
 
         try:
             result = await asyncio.to_thread(_run_query)
@@ -275,7 +298,7 @@ class MySQLQueryTool(BaseTool):
 
         self.last_sql = stripped_sql
         self.executed_sql.append(stripped_sql)
-        
+
         if len(result) > self.output_char_limit:
             truncated_result = (
                 result[: self.output_char_limit]
@@ -283,19 +306,19 @@ class MySQLQueryTool(BaseTool):
             )
             return ToolResult(
                 output=truncated_result,
-                system=f"Query executed successfully with {max_rows} max rows (output truncated)"
+                system=f"Query executed successfully with {max_rows} max rows (output truncated)",
             )
-        
+
         return ToolResult(
             output=result,
-            system=f"Query executed successfully: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}"
+            system=f"Query executed successfully: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}",
         )
 
 
 class MySQLValidateSQLTool(BaseTool):
     name: str = "mysql_validate_sql"
     description: str = "Validate the final SQL without fetching full results. Records the last approved SQL."
-    parameters: Dict[str, Any] = {
+    parameters: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
             "sql": {
@@ -305,7 +328,7 @@ class MySQLValidateSQLTool(BaseTool):
         },
         "required": ["sql"],
     }
-    final_sql: Optional[str] = Field(default=None, exclude=True)
+    final_sql: str | None = Field(default=None, exclude=True)
 
     async def execute(self, sql: str) -> ToolResult:
         stripped_sql = sql.strip().rstrip(";")
@@ -321,12 +344,19 @@ class MySQLValidateSQLTool(BaseTool):
         config = _load_mysql_config()
 
         def _validate() -> str:
-            with closing(_connect(config)) as connection, closing(connection.cursor()) as cursor:
+            with (
+                closing(_connect(config)) as connection,
+                closing(connection.cursor()) as cursor,
+            ):
                 cursor.execute(f"EXPLAIN {stripped_sql}")
                 plan_rows = cursor.fetchall()
-                headers = [col[0] for col in cursor.description] if cursor.description else []
+                headers = (
+                    [col[0] for col in cursor.description] if cursor.description else []
+                )
 
-            formatted = _format_table(headers, [tuple(row.values()) for row in plan_rows])
+            formatted = _format_table(
+                headers, [tuple(row.values()) for row in plan_rows]
+            )
             return formatted or "EXPLAIN returned no plan."
 
         try:
@@ -340,11 +370,12 @@ class MySQLValidateSQLTool(BaseTool):
                 explain_output[:1200]
                 + "\n... (EXPLAIN output truncated to protect context length)"
             )
-        
+
         return ToolResult(
             output="EXPLAIN succeeded. Execution plan:\n" + explain_output,
-            system=f"SQL validation completed for: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}"
+            system=f"SQL validation completed for: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}",
         )
+
 
 schema_tool = MySQLSchemaTool()
 query_tool = MySQLQueryTool()
@@ -376,8 +407,11 @@ agent = create_react_agent(
     enable_tracing=False,
 )
 
+
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="MySQL Text-to-SQL agent example with trace recording")
+    parser = argparse.ArgumentParser(
+        description="MySQL Text-to-SQL agent example with trace recording"
+    )
     parser.add_argument(
         "question",
         nargs="?",
@@ -385,9 +419,9 @@ async def main() -> None:
         help="Natural-language question to answer with SQL.",
     )
     args = parser.parse_args()
-    print(f"🔍 Starting MySQL Text-to-SQL with trace recording...")
+    print("🔍 Starting MySQL Text-to-SQL with trace recording...")
     print(f"Question: {args.question}")
-    
+
     result = await agent.run(args.question)
     print("\n✅ Agent execution completed:")
     print(result)
@@ -401,11 +435,13 @@ async def main() -> None:
         print("\n✅ Validated final SQL:")
         print(validate_tool.final_sql)
     else:
-        print("\n⚠️ No final SQL was validated. Ensure the agent calls mysql_validate_sql once satisfied.")
+        print(
+            "\n⚠️ No final SQL was validated. Ensure the agent calls mysql_validate_sql once satisfied."
+        )
 
     print("\n📊 Final response:")
     print(agent.final_response)
-    
+
     # Save trace data to JSON
     await save_traces_to_json("mysql_text2sql_traces.json", args.question)
 
@@ -413,35 +449,35 @@ async def main() -> None:
 async def save_traces_to_json(filename: str, question: str) -> None:
     """Save all traces to a JSON file."""
     print(f"\n💾 Saving trace data to {filename}...")
-    
+
     trace_manager = get_trace_manager()
     query_engine = TraceQueryEngine(trace_manager.storage)
     exporter = TraceExporter(query_engine)
-    
+
     # Export traces to JSON
     json_data = await exporter.export_traces_to_json()
-    
+
     if not os.path.isdir("./workdir/traces"):
         os.makedirs("./workdir/traces")
 
     # Save to file
-    with open(f"./workdir/traces/{filename}", 'w', encoding='utf-8') as f:
+    with open(f"./workdir/traces/{filename}", "w", encoding="utf-8") as f:
         f.write(json_data)
-    
+
     # Get statistics
     stats = await query_engine.get_trace_statistics()
-    
+
     print(f"✅ Saved trace data to {filename}")
-    print(f"📊 Trace Statistics:")
+    print("📊 Trace Statistics:")
     print(f"  - Total traces: {stats['total_traces']}")
     print(f"  - Average duration: {stats['avg_duration_ms']:.2f}ms")
     print(f"  - Error rate: {stats['error_rate']:.2%}")
-    
+
     # Also save a summary report
-    summary_filename = filename.replace('.json', '_summary.md')
+    summary_filename = filename.replace(".json", "_summary.md")
     summary = await exporter.export_trace_summary()
-    with open(f"./workdir/traces/{summary_filename}", 'w', encoding='utf-8') as f:
-        f.write(f"# MySQL Text-to-SQL Trace Summary\n\n")
+    with open(f"./workdir/traces/{summary_filename}", "w", encoding="utf-8") as f:
+        f.write("# MySQL Text-to-SQL Trace Summary\n\n")
         f.write(f"**Question:** {question}\n\n")
         f.write(summary)
     print(f"📋 Summary report saved to ./workdir/traces/{summary_filename}")

@@ -1,14 +1,21 @@
-from abc import ABC, abstractmethod
+from abc import ABC
+from abc import abstractmethod
 from contextlib import asynccontextmanager
-from typing import List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
+from pydantic import Field
+from pydantic import model_validator
 
-from ..llm import LLM
-from ..logger import logger
-from ..schema import ROLE_TYPE, AgentState, Memory, Message, Role
-from ..trace import trace, run, RunType, TraceMetadata, get_trace_manager
-from ..trace.decorators import trace_agent_step
+from myagent.llm import LLM
+from myagent.logger import logger
+from myagent.schema import ROLE_TYPE
+from myagent.schema import AgentState
+from myagent.schema import Memory
+from myagent.schema import Message
+from myagent.schema import Role
+from myagent.trace import RunType
+from myagent.trace import TraceMetadata
+from myagent.trace import get_trace_manager
 
 
 class BaseAgent(BaseModel, ABC):
@@ -20,13 +27,13 @@ class BaseAgent(BaseModel, ABC):
 
     # Core attributes
     name: str = Field(..., description="Unique name of the agent")
-    description: Optional[str] = Field(None, description="Optional agent description")
+    description: str | None = Field(None, description="Optional agent description")
 
     # Prompts
-    system_prompt: Optional[str] = Field(
+    system_prompt: str | None = Field(
         None, description="System-level instruction prompt"
     )
-    next_step_prompt: Optional[str] = Field(
+    next_step_prompt: str | None = Field(
         None, description="Prompt for determining next action"
     )
 
@@ -42,13 +49,15 @@ class BaseAgent(BaseModel, ABC):
     current_step: int = Field(default=0, description="Current step in execution")
 
     duplicate_threshold: int = 1
-    final_response: Optional[str] = Field(
+    final_response: str | None = Field(
         None, description="Final response after execution"
     )
-    
+
     # Tracing
     enable_tracing: bool = Field(default=True, description="Enable execution tracing")
-    trace_metadata: Optional[TraceMetadata] = Field(None, description="Custom trace metadata")
+    trace_metadata: TraceMetadata | None = Field(
+        None, description="Custom trace metadata"
+    )
 
     class Config:
         arbitrary_types_allowed = True
@@ -93,7 +102,7 @@ class BaseAgent(BaseModel, ABC):
         self,
         role: ROLE_TYPE,  # type: ignore
         content: str,
-        base64_image: Optional[str] = None,
+        base64_image: str | None = None,
         **kwargs,
     ) -> None:
         """Add a message to the agent's memory.
@@ -130,7 +139,7 @@ class BaseAgent(BaseModel, ABC):
             kwargs = {"base64_image": base64_image}
             self.memory.add_message(message_map[role](content, **kwargs))
 
-    async def run(self, request: Optional[str] = None) -> str:
+    async def run(self, request: str | None = None) -> str:
         """Execute the agent's main loop asynchronously.
 
         Args:
@@ -152,35 +161,35 @@ class BaseAgent(BaseModel, ABC):
         if self.enable_tracing:
             trace_manager = get_trace_manager()
             metadata = self.trace_metadata or TraceMetadata()
-            
+
             # Add agent info to metadata
-            metadata.custom_fields.update({
-                "agent_name": self.name,
-                "agent_description": self.description,
-                "max_steps": self.max_steps
-            })
-            
+            metadata.custom_fields.update(
+                {
+                    "agent_name": self.name,
+                    "agent_description": self.description,
+                    "max_steps": self.max_steps,
+                }
+            )
+
             async with trace_manager.trace(
-                name=f"{self.name}_execution",
-                request=request,
-                metadata=metadata
+                name=f"{self.name}_execution", request=request, metadata=metadata
             ) as trace_ctx:
                 return await self._run_with_tracing(request, trace_ctx)
         else:
             return await self._run_without_tracing(request)
-    
-    async def _run_with_tracing(self, request: Optional[str], trace_ctx) -> str:
+
+    async def _run_with_tracing(self, request: str | None, trace_ctx) -> str:
         """Execute the agent with tracing enabled."""
-        results: List[str] = []
+        results: list[str] = []
         final_state = None
-        
+
         async with self.state_context(AgentState.RUNNING):
             while (
                 self.current_step < self.max_steps and self.state != AgentState.FINISHED
             ):
                 self.current_step += 1
                 logger.info(f"Executing step {self.current_step}/{self.max_steps}")
-                
+
                 # Trace each step
                 step_result = await self._traced_step()
 
@@ -192,12 +201,12 @@ class BaseAgent(BaseModel, ABC):
 
             # Capture the final state before state_context reverts it
             final_state = self.state
-            
+
             if self.current_step >= self.max_steps:
                 self.current_step = 0
                 final_state = AgentState.IDLE
                 results.append(f"Terminated: Reached max steps ({self.max_steps})")
-        
+
         # Set the final state after exiting state_context
         if final_state:
             self.state = final_state
@@ -212,10 +221,10 @@ class BaseAgent(BaseModel, ABC):
         trace_ctx.response = self.final_response
 
         return "\n".join(results) if results else "No steps executed"
-    
-    async def _run_without_tracing(self, request: Optional[str]) -> str:
+
+    async def _run_without_tracing(self, request: str | None) -> str:
         """Execute the agent without tracing (original logic)."""
-        results: List[str] = []
+        results: list[str] = []
         final_state = None
         async with self.state_context(AgentState.RUNNING):
             while (
@@ -233,12 +242,12 @@ class BaseAgent(BaseModel, ABC):
 
             # Capture the final state before state_context reverts it
             final_state = self.state
-            
+
             if self.current_step >= self.max_steps:
                 self.current_step = 0
                 final_state = AgentState.IDLE
                 results.append(f"Terminated: Reached max steps ({self.max_steps})")
-        
+
         # Set the final state after exiting state_context
         if final_state:
             self.state = final_state
@@ -250,11 +259,11 @@ class BaseAgent(BaseModel, ABC):
             self.final_response = results[-1] if results else None
 
         return "\n".join(results) if results else "No steps executed"
-    
+
     async def _traced_step(self) -> str:
         """Execute a single step with tracing."""
         trace_manager = get_trace_manager()
-        
+
         inputs = {
             "step_number": self.current_step,
             "max_steps": self.max_steps,
@@ -262,61 +271,61 @@ class BaseAgent(BaseModel, ABC):
             "memory_size": len(self.memory.messages),
             "all_messages": self._get_recent_messages_summary(),
             "system_prompt": self.system_prompt or "",
-            "next_step_prompt": self.next_step_prompt or ""
+            "next_step_prompt": self.next_step_prompt or "",
         }
-        
+
         async with trace_manager.run(
-            name=f"step_{self.current_step}",
-            run_type=RunType.AGENT,
-            inputs=inputs
+            name=f"step_{self.current_step}", run_type=RunType.AGENT, inputs=inputs
         ) as run_ctx:
             # Check if this is a ReActAgent to provide detailed tracing
-            if hasattr(self, 'think') and hasattr(self, 'act'):
+            if hasattr(self, "think") and hasattr(self, "act"):
                 result = await self._traced_react_step(run_ctx)
             else:
                 result = await self.step()
                 run_ctx.outputs["result"] = result
-            
+
             return result
-    
+
     async def _traced_react_step(self, parent_run_ctx) -> str:
         """Execute a ReAct step with Think → Tools structure (no Act layer)."""
         trace_manager = get_trace_manager()
-        
+
         async with trace_manager.run(
             name=f"think_step_{self.current_step}",
             run_type=RunType.THINK,
             inputs={},  # Will be updated after think() execution
-            parent_run_id=parent_run_ctx.id
+            parent_run_id=parent_run_ctx.id,
         ) as think_run:
             should_act = await self.think()
-            
+
             # Get messages after think() execution for complete trace
             user_msg_after = self._get_last_user_message()
             assistant_msg = self._get_last_assistant_message()
-            
+
             # Update inputs with the final user message (after potential merging in think())
             think_run.inputs.update(user_msg_after.to_dict() if user_msg_after else {})
-            
+
             # Update outputs with assistant message
             think_run.outputs.update(assistant_msg.to_dict() if assistant_msg else {})
 
             if not should_act:
-                parent_run_ctx.outputs["result"] = "Thinking complete - no action needed"
+                parent_run_ctx.outputs["result"] = (
+                    "Thinking complete - no action needed"
+                )
                 return "Thinking complete - no action needed"
-        
+
         # Execute actions directly - Tool traces will be recorded as direct children of the step
         result = await self.act()
         parent_run_ctx.outputs["result"] = result
         return result
-    
-    def _get_recent_messages_summary(self, limit: int = None) -> list:
+
+    def _get_recent_messages_summary(self, limit: int | None = None) -> list:
         """Get a summary of messages for tracing.
-        
+
         Args:
-            limit: Maximum number of recent messages to include. 
+            limit: Maximum number of recent messages to include.
                    If None, includes all messages in memory.
-        
+
         Returns:
             List of message summaries with tool call information.
         """
@@ -327,14 +336,18 @@ class BaseAgent(BaseModel, ABC):
             # Get limited recent messages
             recent_messages = self.memory.get_recent_messages(limit)
         summary = []
-        
+
         for msg in recent_messages:
             msg_summary = {
                 "role": msg.role,
-                "content": msg.content[:200] + "..." if msg.content and len(msg.content) > 200 else msg.content,
-                "has_tool_calls": bool(msg.tool_calls)
+                "content": (
+                    msg.content[:200] + "..."
+                    if msg.content and len(msg.content) > 200
+                    else msg.content
+                ),
+                "has_tool_calls": bool(msg.tool_calls),
             }
-            
+
             # Add tool call details if present
             if msg.tool_calls:
                 msg_summary["tool_calls"] = [
@@ -343,24 +356,26 @@ class BaseAgent(BaseModel, ABC):
                         "type": tool_call.type,
                         "function": {
                             "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments[:100] + "..." 
-                            if len(tool_call.function.arguments) > 100 
-                            else tool_call.function.arguments
-                        }
+                            "arguments": (
+                                tool_call.function.arguments[:100] + "..."
+                                if len(tool_call.function.arguments) > 100
+                                else tool_call.function.arguments
+                            ),
+                        },
                     }
                     for tool_call in msg.tool_calls
                 ]
                 msg_summary["tool_call_count"] = len(msg.tool_calls)
-            
+
             # Add additional info for tool messages
             if msg.role == "tool":
                 msg_summary["tool_name"] = msg.name
                 msg_summary["tool_call_id"] = msg.tool_call_id
-            
+
             summary.append(msg_summary)
-        
+
         return summary
-    
+
     def _get_memory_state_summary(self) -> dict:
         """Get a summary of current memory state."""
         tool_stats = self._get_tool_usage_stats()
@@ -368,50 +383,56 @@ class BaseAgent(BaseModel, ABC):
             "total_messages": len(self.memory.messages),
             "all_messages": self._get_recent_messages_summary(),
             "message_types": self._count_message_types(),
-            "tool_usage": tool_stats
+            "tool_usage": tool_stats,
         }
-    
+
     def _count_message_types(self) -> dict:
         """Count messages by type."""
         counts = {}
         for msg in self.memory.messages:
             counts[msg.role] = counts.get(msg.role, 0) + 1
         return counts
-    
+
     def _get_tool_usage_stats(self) -> dict:
         """Get statistics about tool usage in memory."""
         tool_stats = {
             "total_tool_calls": 0,
             "total_tool_responses": 0,
             "tools_used": {},
-            "recent_tool_calls": []
+            "recent_tool_calls": [],
         }
-        
+
         for msg in self.memory.messages:
             # Count tool calls from assistant messages
             if msg.role == "assistant" and msg.tool_calls:
                 tool_stats["total_tool_calls"] += len(msg.tool_calls)
-                
+
                 for tool_call in msg.tool_calls:
                     tool_name = tool_call.function.name
-                    tool_stats["tools_used"][tool_name] = tool_stats["tools_used"].get(tool_name, 0) + 1
-                    
+                    tool_stats["tools_used"][tool_name] = (
+                        tool_stats["tools_used"].get(tool_name, 0) + 1
+                    )
+
                     # Add to recent tool calls (last 5)
                     if len(tool_stats["recent_tool_calls"]) < 5:
-                        tool_stats["recent_tool_calls"].append({
-                            "tool_name": tool_name,
-                            "tool_id": tool_call.id,
-                            "arguments_preview": tool_call.function.arguments[:50] + "..." 
-                            if len(tool_call.function.arguments) > 50 
-                            else tool_call.function.arguments
-                        })
-            
+                        tool_stats["recent_tool_calls"].append(
+                            {
+                                "tool_name": tool_name,
+                                "tool_id": tool_call.id,
+                                "arguments_preview": (
+                                    tool_call.function.arguments[:50] + "..."
+                                    if len(tool_call.function.arguments) > 50
+                                    else tool_call.function.arguments
+                                ),
+                            }
+                        )
+
             # Count tool response messages
             elif msg.role == "tool":
                 tool_stats["total_tool_responses"] += 1
-        
+
         return tool_stats
-    
+
     def _get_current_context(self) -> dict:
         """Get current agent context for thinking."""
         return {
@@ -420,7 +441,7 @@ class BaseAgent(BaseModel, ABC):
             "max_steps": self.max_steps,
             "state": str(self.state),
             "has_system_prompt": bool(self.system_prompt),
-            "has_next_step_prompt": bool(self.next_step_prompt)
+            "has_next_step_prompt": bool(self.next_step_prompt),
         }
 
     @abstractmethod
@@ -438,18 +459,24 @@ class BaseAgent(BaseModel, ABC):
             "1) Different tool usage, 2) Different analysis angle, "
             "3) Skip to final answer if enough info available."
         )
-        
+
         # Stronger intervention - replace instead of append to ensure it's seen
         original_prompt = self.next_step_prompt or ""
-        self.next_step_prompt = f"{stuck_prompt}\n\nOriginal guide: {original_prompt}" if original_prompt else stuck_prompt
-        
+        self.next_step_prompt = (
+            f"{stuck_prompt}\n\nOriginal guide: {original_prompt}"
+            if original_prompt
+            else stuck_prompt
+        )
+
         # Also add a system message to memory for immediate impact
         system_msg = Message.system_message(
             "System: Detected repetitive responses. Please change your approach immediately."
         )
         self.memory.add_message(system_msg)
-        
-        logger.warning(f"Agent {self.name} detected stuck state. Strong intervention applied.")
+
+        logger.warning(
+            f"Agent {self.name} detected stuck state. Strong intervention applied."
+        )
 
     def is_stuck(self) -> bool:
         """Check if the agent is stuck in a loop by detecting duplicate assistant content"""
@@ -458,16 +485,17 @@ class BaseAgent(BaseModel, ABC):
 
         # Get all assistant messages with content
         assistant_messages = [
-            msg for msg in self.memory.messages 
+            msg
+            for msg in self.memory.messages
             if msg.role == "assistant" and msg.content
         ]
-        
+
         if len(assistant_messages) < 2:
             return False
-            
+
         # Check the last assistant message for duplicates
         last_assistant_message = assistant_messages[-1]
-        
+
         # Count identical content occurrences in previous assistant messages
         duplicate_count = sum(
             1
@@ -477,21 +505,21 @@ class BaseAgent(BaseModel, ABC):
 
         return duplicate_count >= self.duplicate_threshold
 
-    def _get_last_llm_response(self) -> Optional[str]:
+    def _get_last_llm_response(self) -> str | None:
         """Return the most recent assistant message content from memory."""
         for message in reversed(self.memory.messages):
             if message.role == Role.ASSISTANT.value and message.content:
                 return message.content
         return None
 
-    def _get_last_user_message(self) -> Optional[Message]:
+    def _get_last_user_message(self) -> Message | None:
         """Return the most recent user message from memory."""
         for message in reversed(self.memory.messages):
             if message.role == Role.USER.value:
                 return message
         return None
 
-    def _get_last_assistant_message(self) -> Optional[Message]:
+    def _get_last_assistant_message(self) -> Message | None:
         """Return the most recent assistant message from memory."""
         for message in reversed(self.memory.messages):
             if message.role == Role.ASSISTANT.value:
@@ -499,11 +527,11 @@ class BaseAgent(BaseModel, ABC):
         return None
 
     @property
-    def messages(self) -> List[Message]:
+    def messages(self) -> list[Message]:
         """Retrieve a list of messages from the agent's memory."""
         return self.memory.messages
 
     @messages.setter
-    def messages(self, value: List[Message]):
+    def messages(self, value: list[Message]):
         """Set the list of messages in the agent's memory."""
         self.memory.messages = value

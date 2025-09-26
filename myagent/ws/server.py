@@ -1,359 +1,449 @@
 """WebSocket server for MyAgent framework."""
 
 import asyncio
+import contextlib
 import json
 import uuid
+from collections.abc import Callable
 from datetime import datetime
-from typing import Dict, Optional, Callable, Any
-import websockets
-from websockets.server import WebSocketServerProtocol
-from websockets.exceptions import ConnectionClosed, WebSocketException
+from typing import Any
 
-from ..agent.base import BaseAgent
-from ..logger import logger
+import websockets
+from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import WebSocketException
+from websockets.server import WebSocketServerProtocol
+
+from myagent.agent.base import BaseAgent
+from myagent.logger import logger
+from .events import AgentEvents
+from .events import SystemEvents
+from .events import UserEvents
+from .events import create_event
 from .session import AgentSession
-from .events import create_event, UserEvents, AgentEvents, SystemEvents
-from .utils import send_websocket_message, is_websocket_closed, close_websocket_safely
+from .utils import close_websocket_safely
+from .utils import is_websocket_closed
+from .utils import send_websocket_message
 
 
 class AgentWebSocketServer:
-    """MyAgent WebSocket 服务器"""
-    
-    def __init__(self, agent_factory_func: Callable[[], BaseAgent], 
-                 host: str = "localhost", port: int = 8080):
+    """MyAgent WebSocket server"""
+
+    def __init__(
+        self,
+        agent_factory_func: Callable[[], BaseAgent],
+        host: str = "localhost",
+        port: int = 8080,
+    ):
         self.agent_factory_func = agent_factory_func
         self.host = host
         self.port = port
-        self.sessions: Dict[str, AgentSession] = {}
-        self.connections: Dict[str, WebSocketServerProtocol] = {}
+        self.sessions: dict[str, AgentSession] = {}
+        self.connections: dict[str, WebSocketServerProtocol] = {}
         self.running = False
         self.shutdown_event = asyncio.Event()
-        
-    async def handle_connection(self, websocket: WebSocketServerProtocol, path: Optional[str] = None):
-        """处理新的 WebSocket 连接"""
+
+    async def handle_connection(
+        self, websocket: WebSocketServerProtocol, path: str | None = None
+    ):
+        """Handle new WebSocket connection"""
         connection_id = str(uuid.uuid4())
         self.connections[connection_id] = websocket
-        
+
         logger.info(f"New WebSocket connection: {connection_id}")
-        
+
         try:
-            # 发送连接确认
-            await self._send_event(websocket, create_event(
-                SystemEvents.CONNECTED,
-                content="Connected to MyAgent WebSocket Server",
-                metadata={"connection_id": connection_id}
-            ))
-            
-            # 处理消息循环
+            # Send connection confirmation
+            await self._send_event(
+                websocket,
+                create_event(
+                    SystemEvents.CONNECTED,
+                    content="Connected to MyAgent WebSocket Server",
+                    metadata={"connection_id": connection_id},
+                ),
+            )
+
+            # Message handling loop
             async for message in websocket:
                 try:
                     data = json.loads(message)
                     await self._handle_message(websocket, connection_id, data)
                 except json.JSONDecodeError as e:
                     logger.error(f"JSON decode error from {connection_id}: {e}")
-                    await self._send_event(websocket, create_event(
-                        SystemEvents.ERROR,
-                        content=f"Invalid JSON: {str(e)}"
-                    ))
+                    await self._send_event(
+                        websocket,
+                        create_event(
+                            SystemEvents.ERROR, content=f"Invalid JSON: {e!s}"
+                        ),
+                    )
                 except Exception as e:
                     logger.error(f"Error handling message from {connection_id}: {e}")
-                    await self._send_event(websocket, create_event(
-                        SystemEvents.ERROR,
-                        content=f"Message handling error: {str(e)}"
-                    ))
-                    
+                    await self._send_event(
+                        websocket,
+                        create_event(
+                            SystemEvents.ERROR, content=f"Message handling error: {e!s}"
+                        ),
+                    )
+
         except ConnectionClosed:
             logger.info(f"WebSocket connection closed: {connection_id}")
         except WebSocketException as e:
             logger.error(f"WebSocket error for {connection_id}: {e}")
         finally:
             await self._cleanup_connection(connection_id)
-    
-    async def _handle_message(self, websocket: WebSocketServerProtocol, 
-                            connection_id: str, message: Dict[str, Any]):
-        """处理接收到的消息"""
+
+    async def _handle_message(
+        self,
+        websocket: WebSocketServerProtocol,
+        connection_id: str,
+        message: dict[str, Any],
+    ):
+        """Handle received message"""
         event_type = message.get("event")
         session_id = message.get("session_id")
-        
+
         logger.debug(f"Processing message: event={event_type}, session_id={session_id}")
         if event_type == UserEvents.RESPONSE:
-            logger.info(f"User response received: session={session_id}, step_id={message.get('step_id')}")
-        
+            logger.info(
+                f"User response received: session={session_id}, step_id={message.get('step_id')}"
+            )
+
         if event_type == UserEvents.CREATE_SESSION:
             logger.info("Handling CREATE_SESSION event")
             await self._create_session(websocket, connection_id, message)
-            
+
         elif event_type == UserEvents.MESSAGE and session_id:
             logger.info(f"Handling MESSAGE event for session {session_id}")
-            # 异步执行，不阻塞消息处理循环
-            asyncio.create_task(self._handle_user_message(websocket, session_id, message))
-            
+            # Execute asynchronously, don't block message handling loop
+            message_task = asyncio.create_task(
+                self._handle_user_message(websocket, session_id, message)
+            )
+
         elif event_type == UserEvents.RESPONSE and session_id:
             logger.info(f"Handling RESPONSE event for session {session_id}")
             await self._handle_user_response(websocket, session_id, message)
-            
+
         elif event_type == UserEvents.CANCEL and session_id:
             logger.info(f"Handling CANCEL event for session {session_id}")
             await self._cancel_session(session_id)
-            
+
         else:
-            logger.warning(f"Unknown event type or missing session_id: event={event_type}, session_id={session_id}")
-            logger.warning(f"Available event types: CREATE_SESSION={UserEvents.CREATE_SESSION}, MESSAGE={UserEvents.MESSAGE}, RESPONSE={UserEvents.RESPONSE}, CANCEL={UserEvents.CANCEL}")
-            await self._send_event(websocket, create_event(
-                SystemEvents.ERROR,
-                content=f"Unknown event type or missing session_id: {event_type}"
-            ))
-    
-    async def _create_session(self, websocket: WebSocketServerProtocol, 
-                            connection_id: str, message: Dict[str, Any]) -> None:
-        """创建新的 Agent 会话"""
+            logger.warning(
+                f"Unknown event type or missing session_id: event={event_type}, session_id={session_id}"
+            )
+            logger.warning(
+                f"Available event types: CREATE_SESSION={UserEvents.CREATE_SESSION}, MESSAGE={UserEvents.MESSAGE}, RESPONSE={UserEvents.RESPONSE}, CANCEL={UserEvents.CANCEL}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(
+                    SystemEvents.ERROR,
+                    content=f"Unknown event type or missing session_id: {event_type}",
+                ),
+            )
+
+    async def _create_session(
+        self,
+        websocket: WebSocketServerProtocol,
+        connection_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        """Create new Agent session"""
         session_id = str(uuid.uuid4())
-        
+
         try:
-            # 使用工厂函数创建 Agent
+            # Use factory function to create Agent
             agent = self.agent_factory_func()
-            
-            # 创建会话
+
+            # Create session
             session = AgentSession(
                 session_id=session_id,
                 connection_id=connection_id,
                 agent=agent,
-                websocket=websocket
+                websocket=websocket,
             )
-            
+
             self.sessions[session_id] = session
-            
-            # 计算当前活跃会话数
+
+            # Calculate current active session count
             active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
             total_sessions = len(self.sessions)
-            
-            logger.info(f"Created session {session_id} for connection {connection_id} | Active sessions: {active_sessions}/{total_sessions}")
-            
-            # 发送会话创建确认
-            await self._send_event(websocket, create_event(
-                AgentEvents.SESSION_CREATED,
-                session_id=session_id,
-                content="会话创建成功",
-                metadata={
-                    "agent_name": getattr(agent, 'name', 'unknown'),
-                    "connection_id": connection_id
-                }
-            ))
-            
+
+            logger.info(
+                f"Created session {session_id} for connection {connection_id} | Active sessions: {active_sessions}/{total_sessions}"
+            )
+
+            # Send session creation confirmation
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.SESSION_CREATED,
+                    session_id=session_id,
+                    content="Session created successfully",
+                    metadata={
+                        "agent_name": getattr(agent, "name", "unknown"),
+                        "connection_id": connection_id,
+                    },
+                ),
+            )
+
         except Exception as e:
             logger.error(f"Failed to create session: {e}")
-            await self._send_event(websocket, create_event(
-                SystemEvents.ERROR,
-                content=f"Failed to create session: {str(e)}"
-            ))
-    
-    async def _handle_user_message(self, websocket: WebSocketServerProtocol,
-                                 session_id: str, message: Dict[str, Any]) -> None:
-        """处理用户消息，执行 Agent"""
+            await self._send_event(
+                websocket,
+                create_event(
+                    SystemEvents.ERROR, content=f"Failed to create session: {e!s}"
+                ),
+            )
+
+    async def _handle_user_message(
+        self,
+        websocket: WebSocketServerProtocol,
+        session_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        """Handle user message, execute Agent"""
         session = self.sessions.get(session_id)
         if not session:
-            await self._send_event(websocket, create_event(
-                AgentEvents.ERROR,
-                session_id=session_id,
-                content="会话不存在"
-            ))
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session not found",
+                ),
+            )
             return
-            
+
         if not session.is_active():
-            await self._send_event(websocket, create_event(
-                AgentEvents.ERROR,
-                session_id=session_id,
-                content="会话已关闭"
-            ))
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session is closed",
+                ),
+            )
             return
-            
+
         user_input = message.get("content", "")
         if not user_input.strip():
-            await self._send_event(websocket, create_event(
-                AgentEvents.ERROR,
-                session_id=session_id,
-                content="消息内容不能为空"
-            ))
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Message content cannot be empty",
+                ),
+            )
             return
-            
-        logger.info(f"Processing user message for session {session_id}: {user_input[:50]}...")
-        
-        # 异步执行 Agent 并流式推送结果（在独立任务中，不阻塞消息处理）
+
+        logger.info(
+            f"Processing user message for session {session_id}: {user_input[:50]}..."
+        )
+
+        # Execute Agent asynchronously and stream results (in separate task, don't block message handling)
         try:
             await session.execute_streaming(user_input)
         except Exception as e:
             logger.error(f"Error executing agent for session {session_id}: {e}")
             try:
-                await self._send_event(websocket, create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content=f"Agent 执行出错: {str(e)}"
-                ))
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        AgentEvents.ERROR,
+                        session_id=session_id,
+                        content=f"Agent execution error: {e!s}",
+                    ),
+                )
             except Exception as send_error:
                 logger.error(f"Failed to send error event: {send_error}")
-    
-    async def _handle_user_response(self, websocket: WebSocketServerProtocol,
-                                   session_id: str, message: Dict[str, Any]) -> None:
-        """处理用户响应（用于工具确认等）"""        
+
+    async def _handle_user_response(
+        self,
+        websocket: WebSocketServerProtocol,
+        session_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        """Handle user response (for tool confirmation etc.)"""
         session = self.sessions.get(session_id)
         if not session:
             logger.error(f"Session {session_id} not found for user response")
-            await self._send_event(websocket, create_event(
-                AgentEvents.ERROR,
-                session_id=session_id,
-                content="会话不存在"
-            ))
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session not found",
+                ),
+            )
             return
-            
+
         step_id = message.get("step_id")
         if not step_id:
             logger.error(f"Missing step_id in user response for session {session_id}")
-            await self._send_event(websocket, create_event(
-                AgentEvents.ERROR,
-                session_id=session_id,
-                content="Missing step_id in user response"
-            ))
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Missing step_id in user response",
+                ),
+            )
             return
-            
+
         response_data = message.get("content", {})
-        
+
         try:
             await session.handle_user_response(step_id, response_data)
         except Exception as e:
-            logger.error(f"Error processing user response for session {session_id}: {e}")
-            await self._send_event(websocket, create_event(
-                AgentEvents.ERROR,
-                session_id=session_id,
-                content=f"Error processing user response: {str(e)}"
-            ))
-    
+            logger.error(
+                f"Error processing user response for session {session_id}: {e}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content=f"Error processing user response: {e!s}",
+                ),
+            )
+
     async def _cancel_session(self, session_id: str) -> None:
-        """取消会话执行"""
+        """Cancel session execution"""
         session = self.sessions.get(session_id)
         if session:
             await session.cancel()
             logger.info(f"Cancelled session {session_id}")
-    
+
     async def _cleanup_connection(self, connection_id: str) -> None:
-        """清理连接和相关会话"""
-        # 移除连接
+        """Clean up connection and related sessions"""
+        # Remove connection
         self.connections.pop(connection_id, None)
-        
-        # 找到并关闭相关会话
+
+        # Find and close related sessions
         sessions_to_remove = []
         for session_id, session in self.sessions.items():
             if session.connection_id == connection_id:
                 await session.close()
                 sessions_to_remove.append(session_id)
-        
-        # 移除已关闭的会话
+
+        # Remove closed sessions
         for session_id in sessions_to_remove:
             self.sessions.pop(session_id, None)
             logger.info(f"Cleaned up session {session_id}")
-        
-        # 显示清理后的会话统计
+
+        # Show session statistics after cleanup
         if sessions_to_remove:
             active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
             total_sessions = len(self.sessions)
-            logger.info(f"Cleaned up connection {connection_id} | Active sessions: {active_sessions}/{total_sessions}")
+            logger.info(
+                f"Cleaned up connection {connection_id} | Active sessions: {active_sessions}/{total_sessions}"
+            )
         else:
             logger.info(f"Cleaned up connection {connection_id}")
-    
-    async def _send_event(self, websocket: WebSocketServerProtocol, 
-                         event: Dict[str, Any]) -> None:
-        """发送事件到客户端"""
+
+    async def _send_event(
+        self, websocket: WebSocketServerProtocol, event: dict[str, Any]
+    ) -> None:
+        """Send event to client"""
         success = await send_websocket_message(websocket, event)
         if not success:
             logger.debug(f"Failed to send event: {event.get('event', 'unknown')}")
-    
+
     async def start_server(self) -> None:
-        """启动 WebSocket 服务器"""
+        """Start WebSocket server"""
         if self.running:
             logger.warning("Server is already running")
             return
-            
+
         self.running = True
-        logger.info(f"🚀 MyAgent WebSocket 服务启动在 ws://{self.host}:{self.port} | Active sessions: 0/0")
-        
+        logger.info(
+            f"🚀 MyAgent WebSocket server started at ws://{self.host}:{self.port} | Active sessions: 0/0"
+        )
+
         try:
             async with websockets.serve(
-                self.handle_connection, 
-                self.host, 
+                self.handle_connection,
+                self.host,
                 self.port,
-                ping_interval=30,  # 心跳间隔
-                ping_timeout=10,   # 心跳超时
-                max_size=1024*1024,  # 1MB 最大消息大小
-                max_queue=32       # 最大队列长度
+                ping_interval=30,  # Heartbeat interval
+                ping_timeout=10,  # Heartbeat timeout
+                max_size=1024 * 1024,  # 1MB max message size
+                max_queue=32,  # Max queue length
             ):
-                # 启动心跳任务
+                # Start heartbeat task
                 heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-                
+
                 try:
-                    # 等待关闭事件而不是永远运行
+                    # Wait for shutdown event instead of running forever
                     await self.shutdown_event.wait()
                 finally:
                     heartbeat_task.cancel()
-                    # 等待心跳任务完全停止
-                    try:
+                    # Wait for heartbeat task to stop completely
+                    with contextlib.suppress(asyncio.CancelledError):
                         await heartbeat_task
-                    except asyncio.CancelledError:
-                        pass
-                    
+
         except Exception as e:
             logger.error(f"Server error: {e}")
             raise
         finally:
             self.running = False
             logger.info("Server stopped")
-    
+
     async def _heartbeat_loop(self) -> None:
-        """心跳循环，定期清理无效连接"""
+        """Heartbeat loop, periodically clean invalid connections"""
         while self.running:
             try:
-                await asyncio.sleep(60)  # 每分钟检查一次
-                
-                # 清理无效会话
+                await asyncio.sleep(60)  # Check every minute
+
+                # Clean invalid sessions
                 invalid_sessions = []
                 for session_id, session in self.sessions.items():
                     if not session.is_active():
                         invalid_sessions.append(session_id)
-                
+
                 for session_id in invalid_sessions:
                     session = self.sessions.pop(session_id, None)
                     if session:
                         await session.close()
                         logger.info(f"Cleaned up inactive session: {session_id}")
-                
-                # 显示心跳清理后的会话统计
+
+                # Show session statistics after heartbeat cleanup
                 if invalid_sessions:
-                    active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
+                    active_sessions = sum(
+                        1 for s in self.sessions.values() if s.is_active()
+                    )
                     total_sessions = len(self.sessions)
-                    logger.info(f"Heartbeat cleanup completed | Active sessions: {active_sessions}/{total_sessions}")
-                
-                # 发送心跳给活跃连接
+                    logger.info(
+                        f"Heartbeat cleanup completed | Active sessions: {active_sessions}/{total_sessions}"
+                    )
+
+                # Send heartbeat to active connections
                 for connection_id, websocket in list(self.connections.items()):
                     if not is_websocket_closed(websocket):
                         heartbeat_event = create_event(
                             SystemEvents.HEARTBEAT,
                             metadata={
                                 "active_sessions": len(self.sessions),
-                                "uptime": 0  # 简化版本，后续可以添加启动时间记录
-                            }
+                                "uptime": 0,  # Simplified version, can add startup time tracking later
+                            },
                         )
-                        success = await send_websocket_message(websocket, heartbeat_event)
+                        success = await send_websocket_message(
+                            websocket, heartbeat_event
+                        )
                         if not success:
                             logger.debug(f"Heartbeat failed for {connection_id}")
-                            # 连接可能已断开，将在下次清理时移除
-                            
+                            # Connection may be disconnected, will be removed in next cleanup
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Heartbeat loop error: {e}")
-    
-    def get_status(self) -> Dict[str, Any]:
-        """获取服务器状态"""
+
+    def get_status(self) -> dict[str, Any]:
+        """Get server status"""
         active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
-        
+
         return {
             "running": self.running,
             "host": self.host,
@@ -361,24 +451,24 @@ class AgentWebSocketServer:
             "total_connections": len(self.connections),
             "total_sessions": len(self.sessions),
             "active_sessions": active_sessions,
-            "server_time": datetime.now().isoformat()
+            "server_time": datetime.now().isoformat(),
         }
-    
+
     async def shutdown(self) -> None:
-        """优雅关闭服务器"""
+        """Gracefully shutdown server"""
         logger.info("Shutting down server...")
-        
-        # 设置关闭标志
+
+        # Set shutdown flag
         self.running = False
-        
-        # 关闭所有会话
+
+        # Close all sessions
         for session in list(self.sessions.values()):
             await session.close()
-        
-        # 关闭所有连接
+
+        # Close all connections
         for websocket in list(self.connections.values()):
             await close_websocket_safely(websocket)
-        
-        # 触发关闭事件来停止服务器主循环
+
+        # Trigger shutdown event to stop server main loop
         self.shutdown_event.set()
         logger.info("Server shutdown complete")

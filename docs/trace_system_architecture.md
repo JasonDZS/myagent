@@ -29,7 +29,7 @@ Trace (执行会话)
 ```json
 {
   "id": "trace-uuid",
-  "name": "{agent_name}_execution", 
+  "name": "{agent_name}_execution",
   "start_time": "2025-09-24T12:00:00.000Z",
   "end_time": "2025-09-24T12:00:10.000Z",
   "request": "用户的原始请求",
@@ -59,7 +59,7 @@ Trace (执行会话)
 {
   "id": "step-uuid",
   "name": "step_N",
-  "run_type": "agent", 
+  "run_type": "agent",
   "parent_run_id": null,  // 顶级run
   "status": "success",
   "start_time": "2025-09-24T12:00:01.000Z",
@@ -97,7 +97,7 @@ Trace (执行会话)
   "name": "think_step_N",
   "run_type": "think",
   "parent_run_id": "step-uuid",  // 直接属于Step
-  "status": "success", 
+  "status": "success",
   "start_time": "2025-09-24T12:00:01.000Z",
   "end_time": "2025-09-24T12:00:03.000Z",
   "inputs": {
@@ -113,7 +113,7 @@ Trace (执行会话)
         "id": "call_xxx",
         "type": "function",
         "function": {
-          "name": "mysql_schema", 
+          "name": "mysql_schema",
           "arguments": "{}"
         }
       }
@@ -136,12 +136,12 @@ Trace (执行会话)
 
 ```json
 {
-  "id": "tool-uuid", 
+  "id": "tool-uuid",
   "name": "mysql_schema",
   "run_type": "tool",
   "parent_run_id": "step-uuid",  // 直接属于Step
   "status": "success",
-  "start_time": "2025-09-24T12:00:03.100Z", 
+  "start_time": "2025-09-24T12:00:03.100Z",
   "end_time": "2025-09-24T12:00:03.200Z",
   "inputs": {
     "table": "users"  // 工具的实际输入参数
@@ -153,7 +153,7 @@ Trace (执行会话)
   "metadata": {
     "tool_description": "Get MySQL database schema information",
     "tool_parameters": {
-      "type": "object", 
+      "type": "object",
       "properties": {
         "table": {
           "type": "string",
@@ -188,7 +188,7 @@ Trace (执行会话)
 │   └── 🛠️ mysql_schema (tool)
 │       ├── Input: {}
 │       └── Output: "Available tables: users, products..."
-│       
+│
 ├── 🎯 Step 2 (agent)
 │   ├── 🧠 Think (think_step_2)
 │   │   ├── Input: "Call mysql_schema for structure..."
@@ -196,9 +196,9 @@ Trace (执行会话)
 │   └── 🛠️ mysql_query (tool)
 │       ├── Input: {"sql": "SELECT * FROM users LIMIT 10"}
 │       └── Output: "Query results: [user_data...]"
-│       
+│
 └── 🎯 Step 3 (agent)
-    ├── 🧠 Think (think_step_3)  
+    ├── 🧠 Think (think_step_3)
     │   ├── Input: "Call mysql_query for data..."
     │   └── Output: "Task completed" + [terminate_call]
     └── 🛠️ terminate (tool)
@@ -254,7 +254,7 @@ for run in think_runs:
     if 'error' in run.get('outputs', {}):
         print(f"Think error in step {run['name']}: {run['outputs']['error']}")
 
-# 查找工具执行问题  
+# 查找工具执行问题
 tool_runs = find_runs_by_type(trace_data, 'tool')
 for run in tool_runs:
     if run.get('status') == 'error':
@@ -329,12 +329,12 @@ from myagent.tool import BaseTool
 class MyCustomTool(BaseTool):
     name = "my_tool"
     description = "My custom tool"
-    
+
     async def execute(self, param1: str, param2: int) -> str:
         # 工具逻辑
         result = f"Processing {param1} with {param2}"
         return result
-        
+
 # Trace会自动记录inputs: {"param1": "...", "param2": 123}
 # 和outputs: {"result": "Processing ... with 123"}
 ```

@@ -1,9 +1,5 @@
 from .base_tool import BaseTool
-from .tool_collection import ToolCollection
 from .terminate import Terminate
+from .tool_collection import ToolCollection
 
-__all__ = [
-    "BaseTool", 
-    "Terminate", 
-    "ToolCollection"
-]
+__all__ = ["BaseTool", "Terminate", "ToolCollection"]

@@ -475,7 +475,7 @@
             try {
                 const response = await fetch('/api/traces/all');
                 const data = await response.json();
-                
+
                 if (data.success) {
                     allTraces = data.traces;
                     populateTraceSelector();
@@ -492,7 +492,7 @@
         function populateTraceSelector() {
             const selector = document.getElementById('traceSelector');
             selector.innerHTML = '<option value="">Select a trace...</option>';
-            
+
             allTraces.forEach((trace, index) => {
                 const option = document.createElement('option');
                 option.value = index;
@@ -504,7 +504,7 @@
         function selectTrace() {
             const selector = document.getElementById('traceSelector');
             const selectedIndex = selector.value;
-            
+
             if (selectedIndex === '') {
                 selectedTrace = null;
                 selectedRun = null;
@@ -512,7 +512,7 @@
                 renderEmptyRunDetails();
                 return;
             }
-            
+
             selectedTrace = allTraces[selectedIndex];
             selectedRun = null;
             renderRunsTree();
@@ -531,7 +531,7 @@
 
         function renderRunsTree() {
             const runsList = document.getElementById('runsList');
-            
+
             if (!selectedTrace || !selectedTrace.runs || selectedTrace.runs.length === 0) {
                 runsList.innerHTML = `
                     <div class="empty-state">
@@ -546,12 +546,12 @@
             const runs = selectedTrace.runs;
             const runMap = new Map();
             const rootRuns = [];
-            
+
             // First pass: create map of all runs
             runs.forEach(run => {
                 runMap.set(run.id, { ...run, children: [] });
             });
-            
+
             // Second pass: build tree structure
             runs.forEach(run => {
                 if (run.parent_run_id && runMap.has(run.parent_run_id)) {
@@ -560,7 +560,7 @@
                     rootRuns.push(runMap.get(run.id));
                 }
             });
-            
+
             runsList.innerHTML = rootRuns.map(run => renderRunTreeItem(run, 0)).join('');
         }
 
@@ -569,7 +569,7 @@
             const iconText = getRunIcon(runType);
             const duration = calculateDuration(run.start_time, run.end_time);
             const statusClass = getStatusClass(run.status);
-            
+
             let html = `
                 <div class="run-tree-item ${level > 0 ? 'nested' : ''}">
                     <div class="run-item-header" onclick="selectRun('${run.id}')" data-run-id="${run.id}">
@@ -584,12 +584,12 @@
                     </div>
                 </div>
             `;
-            
+
             // Add children if any
             if (run.children && run.children.length > 0) {
                 html += run.children.map(child => renderRunTreeItem(child, level + 1)).join('');
             }
-            
+
             return html;
         }
 
@@ -612,15 +612,15 @@
 
         function selectRun(runId) {
             if (!selectedTrace || !selectedTrace.runs) return;
-            
+
             selectedRun = selectedTrace.runs.find(run => run.id === runId);
-            
+
             // Update selection in tree
             document.querySelectorAll('.run-item-header').forEach(item => {
                 item.classList.remove('selected');
             });
             document.querySelector(`[data-run-id="${runId}"]`).classList.add('selected');
-            
+
             renderRunDetails();
         }
 
@@ -634,29 +634,29 @@
                 renderEmptyRunDetails();
                 return;
             }
-            
+
             document.getElementById('noSelection').style.display = 'none';
             document.getElementById('runDetailsContainer').style.display = 'block';
-            
+
             // Update header
             document.getElementById('runDetailsTitle').textContent = selectedRun.name || selectedRun.run_type || 'Unnamed Run';
-            
+
             const meta = document.getElementById('runDetailsMeta');
             const duration = calculateDuration(selectedRun.start_time, selectedRun.end_time);
             const statusClass = getStatusClass(selectedRun.status);
-            
+
             meta.innerHTML = `
                 <span class="run-item-status status-${statusClass}">${selectedRun.status || 'unknown'}</span>
                 <span>${selectedRun.run_type || 'unknown'}</span>
                 ${duration ? `<span class="duration">${duration}</span>` : ''}
             `;
-            
+
             renderRunDetailsContent();
         }
 
         function renderRunDetailsContent() {
             const content = document.getElementById('runDetailsContent');
-            
+
             if (activeTab === 'input') {
                 renderInputTab(content);
             } else if (activeTab === 'output') {
@@ -668,7 +668,7 @@
 
         function renderInputTab(container) {
             let html = '';
-            
+
             // Timing information
             if (selectedRun.start_time || selectedRun.end_time || selectedRun.latency_ms) {
                 html += `
@@ -697,7 +697,7 @@
                     </div>
                 `;
             }
-            
+
             // Inputs
             if (selectedRun.inputs && Object.keys(selectedRun.inputs).length > 0) {
                 html += `
@@ -707,13 +707,13 @@
                     </div>
                 `;
             }
-            
+
             container.innerHTML = html || '<div class="detail-section"><div class="detail-value">No input data available</div></div>';
         }
 
         function renderOutputTab(container) {
             let html = '';
-            
+
             // Outputs
             if (selectedRun.outputs && Object.keys(selectedRun.outputs).length > 0) {
                 html += `
@@ -723,7 +723,7 @@
                     </div>
                 `;
             }
-            
+
             // Error information
             if (selectedRun.error) {
                 html += `
@@ -733,13 +733,13 @@
                     </div>
                 `;
             }
-            
+
             container.innerHTML = html || '<div class="detail-section"><div class="detail-value">No output data available</div></div>';
         }
 
         function renderMetadataTab(container) {
             let html = '';
-            
+
             // Token usage (for LLM runs)
             if (selectedRun.token_usage) {
                 html += `
@@ -749,7 +749,7 @@
                     </div>
                 `;
             }
-            
+
             // Metadata
             if (selectedRun.metadata && Object.keys(selectedRun.metadata).length > 0) {
                 html += `
@@ -759,7 +759,7 @@
                     </div>
                 `;
             }
-            
+
             // Basic run information
             const basicInfo = {
                 'Run ID': selectedRun.id,
@@ -768,14 +768,14 @@
                 'Parent Run ID': selectedRun.parent_run_id,
                 'Trace ID': selectedRun.trace_id
             };
-            
+
             html += `
                 <div class="detail-section">
                     <div class="detail-label">Run Information</div>
                     <div class="detail-value">${JSON.stringify(basicInfo, null, 2)}</div>
                 </div>
             `;
-            
+
             container.innerHTML = html;
         }
 
@@ -790,12 +790,12 @@
 
         function calculateDuration(start, end) {
             if (!start || !end) return null;
-            
+
             try {
                 const startTime = new Date(start.replace('Z', '+00:00'));
                 const endTime = new Date(end.replace('Z', '+00:00'));
                 const durationMs = endTime - startTime;
-                
+
                 if (durationMs < 1000) {
                     return `${durationMs}ms`;
                 } else {
@@ -816,7 +816,7 @@
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 tab.classList.add('active');
                 activeTab = tab.dataset.tab;
-                
+
                 if (selectedRun) {
                     renderRunDetailsContent();
                 }

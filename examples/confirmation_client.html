@@ -91,16 +91,16 @@
 </head>
 <body>
     <h1>MyAgent User Confirmation Demo</h1>
-    
+
     <div id="status" class="status disconnected">Disconnected</div>
-    
+
     <div id="chatContainer" class="chat-container"></div>
-    
+
     <div class="input-container">
         <input type="text" id="messageInput" placeholder="Type your message here..." disabled>
         <button id="sendButton" onclick="sendMessage()" disabled>Send</button>
     </div>
-    
+
     <div style="margin-top: 20px;">
         <h3>Test Commands:</h3>
         <ul>
@@ -117,25 +117,25 @@
 
         function connect() {
             ws = new WebSocket('ws://localhost:8890');
-            
+
             ws.onopen = function(event) {
                 console.log('Connected to WebSocket server');
                 updateStatus('Connected', true);
                 createSession();
             };
-            
+
             ws.onmessage = function(event) {
                 const message = JSON.parse(event.data);
                 console.log('Received message:', message);
                 handleMessage(message);
             };
-            
+
             ws.onclose = function(event) {
                 console.log('WebSocket connection closed');
                 updateStatus('Disconnected', false);
                 setTimeout(connect, 3000); // Reconnect after 3 seconds
             };
-            
+
             ws.onerror = function(error) {
                 console.error('WebSocket error:', error);
                 updateStatus('Error', false);
@@ -153,17 +153,17 @@
         function sendMessage() {
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
-            
+
             if (!message || !sessionId) return;
-            
+
             addMessage('user', message);
-            
+
             const wsMessage = {
                 event: "user.message",
                 session_id: sessionId,
                 content: message
             };
-            
+
             ws.send(JSON.stringify(wsMessage));
             input.value = '';
         }
@@ -177,7 +177,7 @@
                     confirmed: confirmed
                 }
             };
-            
+
             ws.send(JSON.stringify(wsMessage));
             pendingConfirmation = null;
         }
@@ -189,38 +189,38 @@
                     addMessage('system', 'Session created successfully');
                     enableInput();
                     break;
-                
+
                 case 'agent.thinking':
                     if (message.content) {
                         addMessage('agent', `Thinking: ${message.content}`);
                     }
                     break;
-                
+
                 case 'agent.tool_call':
                     addMessage('agent', `Calling tool: ${message.metadata?.tool} with args: ${JSON.stringify(message.metadata?.args || {})}`);
                     break;
-                
+
                 case 'agent.tool_result':
                     const status = message.metadata?.status || 'unknown';
                     const toolName = message.metadata?.tool || 'unknown';
                     addMessage('agent', `Tool ${toolName} ${status}: ${message.content}`);
                     break;
-                
+
                 case 'agent.user_confirm':
                     pendingConfirmation = message.step_id;
                     const toolInfo = message.metadata || {};
                     addConfirmationRequest(message.step_id, message.content, toolInfo);
                     break;
-                
+
                 case 'agent.final_answer':
                     addMessage('agent', message.content);
                     break;
-                
+
                 case 'agent.error':
                 case 'system.error':
                     addMessage('system', `Error: ${message.content}`);
                     break;
-                
+
                 default:
                     console.log('Unhandled message type:', message.event);
             }
@@ -239,7 +239,7 @@
             const chatContainer = document.getElementById('chatContainer');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message confirmation-request';
-            
+
             const toolArgs = JSON.stringify(toolInfo.tool_args || {}, null, 2);
             messageDiv.innerHTML = `
                 <strong>Confirmation Required:</strong><br>
@@ -251,7 +251,7 @@
                 <button class="confirm-button" onclick="sendConfirmation('${stepId}', true)">Confirm</button>
                 <button class="cancel-button" onclick="sendConfirmation('${stepId}', false)">Cancel</button>
             `;
-            
+
             chatContainer.appendChild(messageDiv);
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }

@@ -1,8 +1,45 @@
-# MyAgent Framework Documentation
+# MyAgent Documentation
 
-欢迎来到MyAgent框架的文档目录！这里包含了关于框架各个组件的详细说明和使用指南。
+Welcome to the MyAgent documentation! MyAgent is a lightweight toolkit for building tool-aware LLM agents with comprehensive tracing capabilities.
 
-## 📚 文档概览
+## 📚 Documentation Structure
+
+### Getting Started
+- **[Quick Start](guides/quick-start.md)** - Get up and running in minutes
+- **[Installation](guides/installation.md)** - Detailed installation instructions
+- **[Basic Concepts](guides/basic-concepts.md)** - Core concepts and terminology
+
+### Guides
+- **[Creating Agents](guides/creating-agents.md)** - How to build your first agent
+- **[Custom Tools](guides/custom-tools.md)** - Building custom tools for your agents
+- **[Configuration](guides/configuration.md)** - Environment variables and settings
+- **[Best Practices](guides/best-practices.md)** - Recommended patterns and practices
+
+### API Reference
+- **[Agent Classes](api/agents.md)** - BaseAgent, ToolCallAgent, ReActAgent
+- **[Tool System](api/tools.md)** - BaseTool, ToolCollection, built-in tools
+- **[Schema Types](api/schema.md)** - Message, ToolCall, ToolResult, and more
+- **[LLM Integration](api/llm.md)** - LLM configuration and usage
+
+### WebSocket Server
+- **[Server Setup](websocket/server-setup.md)** - Running the WebSocket server
+- **[Protocol Documentation](websocket/protocol.md)** - WebSocket message format and events
+- **[Client Integration](websocket/client-integration.md)** - Connecting clients to the server
+- **[Session Management](websocket/session-management.md)** - Managing agent sessions
+
+### Tracing & Debugging
+- **[Trace System Overview](tracing/overview.md)** - Understanding the tracing system
+- **[Trace Decorators](tracing/decorators.md)** - Using trace decorators
+- **[Query & Analysis](tracing/query.md)** - Querying and analyzing traces
+- **[Trace Viewer](tracing/viewer.md)** - Using the web-based trace viewer
+
+### Examples
+- **[Simple Agent](examples/simple-agent.md)** - Basic agent example
+- **[Web Search Agent](examples/web-search.md)** - Agent with web search capabilities
+- **[WebSocket Agent](examples/websocket-agent.md)** - Real-time WebSocket agent
+- **[Custom Tool Examples](examples/custom-tools.md)** - Various custom tool implementations
+
+## Existing Documentation (Legacy)
 
 ### 🔍 [Trace系统架构](./trace_system_architecture.md)
 详细介绍MyAgent框架的trace系统设计架构，包括：
@@ -13,7 +50,7 @@
 
 **适用对象**: 框架开发者、架构师、需要深入了解trace系统内部机制的用户
 
-### 🛠️ [Trace使用指南](./trace_usage_guide.md) 
+### 🛠️ [Trace使用指南](./trace_usage_guide.md)
 全面的trace系统实用手册，涵盖：
 - 快速开始和基础配置
 - 数据分析和可视化方法
@@ -60,69 +97,52 @@
 
 **适用对象**: 遇到问题的开发者、运维人员、技术支持
 
-## 🚀 快速开始
+## 🚀 Quick Links
 
-如果你是第一次使用MyAgent的trace功能，建议按以下顺序阅读：
+- **[GitHub Repository](https://github.com/yourusername/myagent)**
+- **[PyPI Package](https://pypi.org/project/myagent/)**
+- **[Examples Directory](../examples/)**
+- **[Issue Tracker](https://github.com/yourusername/myagent/issues)**
 
-1. **了解架构** - 先阅读[trace系统架构文档](./trace_system_architecture.md)的"系统架构概览"部分
-2. **实践应用** - 然后查看[使用指南](./trace_usage_guide.md)的"快速开始"部分
-3. **深入学习** - 根据具体需求深入阅读相关章节
+## 📖 Reading Order
 
-## 🔧 核心特性
+If you're new to MyAgent, we recommend following this reading order:
 
-### ✅ 扁平化架构
-- 移除冗余的Act层
-- Think→Tools直接关系
-- 优化存储效率
+1. **[Quick Start](guides/quick-start.md)** - Get your first agent running
+2. **[Basic Concepts](guides/basic-concepts.md)** - Understand the framework
+3. **[Creating Agents](guides/creating-agents.md)** - Learn to build agents
+4. **[Custom Tools](guides/custom-tools.md)** - Extend with custom functionality
+5. **[WebSocket Server](websocket/server-setup.md)** - Add real-time capabilities
+6. **[Tracing System](tracing/overview.md)** - Debug and monitor agents
 
-### ✅ 完整信息记录
-- 保留完整Message对象
-- 记录详细工具执行信息
-- 支持自定义元数据
+## 🔧 Core Features
 
-### ✅ 强大分析能力
-- 推理过程分析
-- 工具使用统计
-- 性能监控告警
-- 调试和故障排查
+### ✅ ReAct Pattern Implementation
+- Reasoning and Acting in unified workflow
+- Tool-aware agent architecture
+- Flexible tool selection strategies
 
-## 📋 文档更新
+### ✅ Comprehensive Tracing
+- Complete execution tracking
+- Detailed performance monitoring
+- Web-based trace viewer
 
-本文档基于MyAgent框架的最新扁平化trace架构编写，反映了以下重要改进：
+### ✅ Real-time WebSocket Support
+- Live agent interactions
+- Session management
+- Event-based communication
 
-- **v2.0架构更新** (2025-09): 实现扁平化trace结构，移除Act层冗余
-- **消息合并优化**: Think阶段输入包含完整的用户请求和指导提示
-- **性能优化**: 显著减少trace存储空间和查询复杂度
+### ✅ Extensible Tool System
+- Custom tool development
+- Built-in tool collection
+- Tool confirmation workflows
 
-## 🤝 贡献指南
+## 🆘 Getting Help
 
-我们欢迎对文档的改进建议和贡献！如果你发现：
-
-- 文档中的错误或过时信息
-- 缺少重要的使用场景说明
-- 需要补充的最佳实践
-
-请通过以下方式参与贡献：
-
-1. 提交Issue描述问题或建议
-2. 创建Pull Request提供改进
-3. 在社区讨论中分享经验
-
-## 📞 获取帮助
-
-如果在使用过程中遇到问题：
-
-1. **查阅文档** - 首先查看相关文档章节
-2. **检查示例** - 参考`examples/`目录中的示例代码
-3. **社区支持** - 在项目社区中寻求帮助
-4. **提交Issue** - 报告bug或功能请求
-
-## 🔗 相关资源
-
-- **示例代码**: `../examples/` - 包含完整的使用示例
-- **API参考**: 框架核心API文档
-- **变更日志**: 版本更新和改进历史
+- **Issues**: Report bugs and request features on [GitHub Issues](https://github.com/yourusername/myagent/issues)
+- **Discussions**: Join the community discussion on [GitHub Discussions](https://github.com/yourusername/myagent/discussions)
+- **Examples**: Check the [examples directory](../examples/) for practical implementations
 
 ---
 
-*文档最后更新: 2025年9月*
+*Last updated: 2024-09-26*

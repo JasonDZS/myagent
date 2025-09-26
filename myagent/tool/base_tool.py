@@ -1,19 +1,22 @@
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
-import asyncio
+from abc import ABC
+from abc import abstractmethod
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from pydantic import Field
 
-from ..trace import get_trace_manager, RunType
-from ..trace.decorators import trace_tool_call
+from myagent.trace import RunType
+from myagent.trace import get_trace_manager
 
 
 class BaseTool(ABC, BaseModel):
     name: str
     description: str
-    parameters: Optional[dict] = None
+    parameters: dict | None = None
     enable_tracing: bool = Field(default=True, description="Enable execution tracing")
-    user_confirm: bool = Field(default=False, description="Require user confirmation before execution")
+    user_confirm: bool = Field(
+        default=False, description="Require user confirmation before execution"
+    )
 
     class Config:
         arbitrary_types_allowed = True
@@ -25,62 +28,59 @@ class BaseTool(ABC, BaseModel):
             confirmed = await self._request_user_confirmation(**kwargs)
             if not confirmed:
                 return ToolResult(error="Tool execution cancelled by user")
-        
+
         if self.enable_tracing:
             return await self._traced_execute(**kwargs)
         else:
             return await self.execute(**kwargs)
-    
+
     async def _request_user_confirmation(self, **kwargs) -> bool:
         """Request user confirmation for tool execution."""
         # Try to get the WebSocket session from the current context
-        confirmation_handler = getattr(self, '_confirmation_handler', None)
+        confirmation_handler = getattr(self, "_confirmation_handler", None)
         if confirmation_handler:
             return await confirmation_handler(self, kwargs)
-        
+
         # Fallback: no WebSocket context, assume confirmation granted
         # This allows tools to work in non-WebSocket environments
         return True
-    
+
     def set_confirmation_handler(self, handler):
         """Set the confirmation handler for WebSocket sessions."""
         self._confirmation_handler = handler
-    
+
     async def _traced_execute(self, **kwargs) -> Any:
         """Execute the tool with tracing enabled."""
         trace_manager = get_trace_manager()
-        
+
         # Prepare inputs for tracing
         inputs = dict(kwargs)
-        
+
         # Prepare metadata
         metadata = {
             "tool_description": self.description,
-            "tool_parameters": self.parameters
+            "tool_parameters": self.parameters,
         }
-        
+
         async with trace_manager.run(
-            name=self.name,
-            run_type=RunType.TOOL,
-            inputs=inputs,
-            **metadata
+            name=self.name, run_type=RunType.TOOL, inputs=inputs, **metadata
         ) as run_ctx:
             try:
                 result = await self.execute(**kwargs)
-                
+
                 # Capture tool result
                 if result is not None:
-                    if hasattr(result, 'output'):
+                    if hasattr(result, "output"):
                         # Handle ToolResult objects
                         run_ctx.outputs["output"] = str(result.output)
-                        if hasattr(result, 'error') and result.error:
+                        if hasattr(result, "error") and result.error:
                             run_ctx.outputs["error"] = result.error
                             run_ctx.metadata["has_error"] = True
                     else:
                         run_ctx.outputs["result"] = str(result)
-                
+
                 return result
-            
+
             except Exception as e:
                 run_ctx.fail(str(e), type(e).__name__)
                 raise
@@ -89,7 +89,7 @@ class BaseTool(ABC, BaseModel):
     async def execute(self, **kwargs) -> Any:
         """Execute the tool with given parameters."""
 
-    def to_param(self) -> Dict:
+    def to_param(self) -> dict:
         """Convert tool to function call format."""
         return {
             "type": "function",
@@ -105,9 +105,9 @@ class ToolResult(BaseModel):
     """Represents the result of a tool execution."""
 
     output: Any = Field(default=None)
-    error: Optional[str] = Field(default=None)
-    base64_image: Optional[str] = Field(default=None)
-    system: Optional[str] = Field(default=None)
+    error: str | None = Field(default=None)
+    base64_image: str | None = Field(default=None)
+    system: str | None = Field(default=None)
 
     class Config:
         arbitrary_types_allowed = True
@@ -117,7 +117,7 @@ class ToolResult(BaseModel):
 
     def __add__(self, other: "ToolResult"):
         def combine_fields(
-            field: Optional[str], other_field: Optional[str], concatenate: bool = True
+            field: str | None, other_field: str | None, concatenate: bool = True
         ):
             if field and other_field:
                 if concatenate:

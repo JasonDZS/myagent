@@ -43,4 +43,7 @@ design.md
 .env
 workdir/
 CLAUDE.md
-llm_response.json
+.qoder/
+.mypy_cache/
+.ruff_cache/
+bandit-report.json

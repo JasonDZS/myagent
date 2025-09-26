@@ -1,16 +1,14 @@
+from typing import ClassVar
+
 from .base_tool import BaseTool
 
-
-_TERMINATE_DESCRIPTION = """MANDATORY: Call this tool after every response to the user to terminate the interaction.
-- Call with status="success" if you successfully answered the user or completed their task
-- Call with status="failure" if you encountered problems you cannot resolve
-- This tool MUST be called after providing your response to properly end the conversation"""
+_TERMINATE_DESCRIPTION = "Terminate the interaction."
 
 
 class Terminate(BaseTool):
     name: str = "terminate"
     description: str = _TERMINATE_DESCRIPTION
-    parameters: dict = {
+    parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
             "status": {
