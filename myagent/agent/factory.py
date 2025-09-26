@@ -20,9 +20,9 @@ def _ensure_tool_collection(
     return collection
 
 
-def create_react_agent(
+def create_toolcall_agent(
     *,
-    name: str = "react-agent",
+    name: str = "toolcall-agent",
     llm: Optional[LLM] = None,
     tools: Optional[Union[Sequence[BaseTool], ToolCollection]] = None,
     system_prompt: Optional[str] = None,
@@ -32,7 +32,10 @@ def create_react_agent(
     max_observe: Optional[int] = None,
     **extra_fields,
 ) -> ToolCallAgent:
-    """Create a tool-aware ReAct agent instance.
+    """Create a tool-aware agent that implements the ReAct pattern.
+
+    This agent uses the ToolCallAgent implementation which combines reasoning (thinking)
+    and acting (tool execution) in a single workflow.
 
     Args:
         name: Agent identifier.
@@ -44,6 +47,9 @@ def create_react_agent(
         max_steps: Override default step budget.
         max_observe: Optional cap on observation length.
         extra_fields: Any additional ``ToolCallAgent`` fields to set.
+
+    Returns:
+        A ToolCallAgent instance that implements the ReAct pattern.
 
     Notes:
         Always ensures the ``terminate`` tool is available so the agent can finish runs.
@@ -90,3 +96,53 @@ def create_react_agent(
                 tool_instance.enable_tracing = False
 
     return ToolCallAgent(**agent_kwargs)
+
+
+def create_react_agent(
+    *,
+    name: str = "react-agent",
+    llm: Optional[LLM] = None,
+    tools: Optional[Union[Sequence[BaseTool], ToolCollection]] = None,
+    system_prompt: Optional[str] = None,
+    next_step_prompt: Optional[str] = None,
+    tool_choice: Optional[Union[ToolChoice, TOOL_CHOICE_TYPE]] = ToolChoice.AUTO,
+    max_steps: Optional[int] = None,
+    max_observe: Optional[int] = None,
+    **extra_fields,
+) -> ToolCallAgent:
+    """Create a tool-aware ReAct agent instance.
+    
+    This function is an alias for create_toolcall_agent() to maintain backward compatibility.
+    The returned agent implements the ReAct (Reason + Act) pattern using tool calls.
+    
+    Args:
+        name: Agent identifier.
+        llm: Concrete ``LLM`` instance to use.
+        tools: Sequence of ``BaseTool`` instances or a pre-built ``ToolCollection``.
+        system_prompt: Optional system message injected on every turn.
+        next_step_prompt: Optional hint appended before each thinking cycle.
+        tool_choice: Strategy for tool selection.
+        max_steps: Override default step budget.
+        max_observe: Optional cap on observation length.
+        extra_fields: Any additional ``ToolCallAgent`` fields to set.
+
+    Returns:
+        A ToolCallAgent instance that implements the ReAct pattern.
+
+    Notes:
+        Always ensures the ``terminate`` tool is available so the agent can finish runs.
+        
+    Deprecated:
+        Use create_toolcall_agent() instead for better clarity.
+    """
+    return create_toolcall_agent(
+        name=name,
+        llm=llm,
+        tools=tools,
+        system_prompt=system_prompt,
+        next_step_prompt=next_step_prompt,
+        tool_choice=tool_choice,
+        max_steps=max_steps,
+        max_observe=max_observe,
+        **extra_fields
+    )

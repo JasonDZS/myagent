@@ -23,7 +23,17 @@ TOOL_CALL_REQUIRED = "Tool calls required but none provided"
 
 
 class ToolCallAgent(ReActAgent):
-    """Base agent class for handling tool/function calls with enhanced abstraction"""
+    """Agent that implements the ReAct pattern (Reasoning + Acting) using tool calls.
+    
+    This agent combines thinking (reasoning) and tool execution (acting) in a unified workflow.
+    It inherits from ReActAgent but provides a complete implementation of the ReAct pattern
+    through the think() and act() methods.
+    
+    The agent operates in cycles:
+    1. Think: Analyze the current situation and decide which tools to use
+    2. Act: Execute the selected tools and process their results
+    3. Repeat until the task is completed or max steps are reached
+    """
 
     name: str = "toolcall"
     description: str = "an agent that can execute tool calls."

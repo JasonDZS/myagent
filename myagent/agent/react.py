@@ -9,6 +9,19 @@ from ..schema import AgentState, Memory
 
 
 class ReActAgent(BaseAgent, ABC):
+    """Abstract base class for agents implementing the ReAct pattern.
+    
+    The ReAct (Reasoning + Acting) pattern involves:
+    1. Think: Process information and decide on actions
+    2. Act: Execute actions using available tools
+    
+    This is an abstract class that defines the interface for ReAct agents.
+    Concrete implementations should inherit from this class and implement
+    the think() and act() methods.
+    
+    For a complete implementation, see ToolCallAgent.
+    """
+    
     name: str
     description: Optional[str] = None
 
