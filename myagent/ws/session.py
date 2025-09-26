@@ -10,6 +10,7 @@ from ..agent.base import BaseAgent
 from ..schema import AgentState
 from ..logger import logger
 from .events import create_event, AgentEvents, SystemEvents
+from .utils import send_websocket_message, is_websocket_closed
 
 
 class AgentSession:
@@ -330,17 +331,9 @@ class AgentSession:
     
     async def _send_event(self, event: Dict[str, Any]) -> None:
         """发送事件到客户端"""
-        try:
-            # 检查连接状态的兼容性方法
-            if hasattr(self.websocket, 'closed'):
-                is_closed = self.websocket.closed
-            else:
-                is_closed = getattr(self.websocket, 'close_code', None) is not None
-            
-            if not is_closed:
-                await self.websocket.send(json.dumps(event))
-        except Exception as e:
-            logger.error(f"Failed to send event to session {self.session_id}: {e}")
+        success = await send_websocket_message(self.websocket, event)
+        if not success:
+            logger.error(f"Failed to send event to session {self.session_id}: {event.get('event', 'unknown')}")
     
     def is_active(self) -> bool:
         """检查会话是否仍然活跃"""
@@ -348,11 +341,7 @@ class AgentSession:
         if hasattr(self, '_pending_confirmations') and self._pending_confirmations:
             return True
             
-        if hasattr(self.websocket, 'closed'):
-            is_closed = self.websocket.closed
-        else:
-            is_closed = getattr(self.websocket, 'close_code', None) is not None
-        return not is_closed and self.state != "closed"
+        return not is_websocket_closed(self.websocket) and self.state != "closed"
     
     async def close(self) -> None:
         """关闭会话"""

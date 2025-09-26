@@ -13,6 +13,7 @@ from ..agent.base import BaseAgent
 from ..logger import logger
 from .session import AgentSession
 from .events import create_event, UserEvents, AgentEvents, SystemEvents
+from .utils import send_websocket_message, is_websocket_closed, close_websocket_safely
 
 
 class AgentWebSocketServer:
@@ -261,18 +262,9 @@ class AgentWebSocketServer:
     async def _send_event(self, websocket: WebSocketServerProtocol, 
                          event: Dict[str, Any]) -> None:
         """发送事件到客户端"""
-        try:
-            # 检查连接状态的兼容性方法
-            if hasattr(websocket, 'closed'):
-                is_closed = websocket.closed
-            else:
-                # 对于较新版本的 websockets 库
-                is_closed = getattr(websocket, 'close_code', None) is not None
-            
-            if not is_closed:
-                await websocket.send(json.dumps(event))
-        except Exception as e:
-            logger.error(f"Failed to send event: {e}")
+        success = await send_websocket_message(websocket, event)
+        if not success:
+            logger.debug(f"Failed to send event: {event.get('event', 'unknown')}")
     
     async def start_server(self) -> None:
         """启动 WebSocket 服务器"""
@@ -340,23 +332,17 @@ class AgentWebSocketServer:
                 
                 # 发送心跳给活跃连接
                 for connection_id, websocket in list(self.connections.items()):
-                    # 检查连接状态的兼容性方法
-                    if hasattr(websocket, 'closed'):
-                        is_closed = websocket.closed
-                    else:
-                        is_closed = getattr(websocket, 'close_code', None) is not None
-                        
-                    if not is_closed:
-                        try:
-                            await self._send_event(websocket, create_event(
-                                SystemEvents.HEARTBEAT,
-                                metadata={
-                                    "active_sessions": len(self.sessions),
-                                    "uptime": 0  # 简化版本，后续可以添加启动时间记录
-                                }
-                            ))
-                        except Exception as e:
-                            logger.debug(f"Heartbeat failed for {connection_id}: {e}")
+                    if not is_websocket_closed(websocket):
+                        heartbeat_event = create_event(
+                            SystemEvents.HEARTBEAT,
+                            metadata={
+                                "active_sessions": len(self.sessions),
+                                "uptime": 0  # 简化版本，后续可以添加启动时间记录
+                            }
+                        )
+                        success = await send_websocket_message(websocket, heartbeat_event)
+                        if not success:
+                            logger.debug(f"Heartbeat failed for {connection_id}")
                             # 连接可能已断开，将在下次清理时移除
                             
             except asyncio.CancelledError:
@@ -391,17 +377,7 @@ class AgentWebSocketServer:
         
         # 关闭所有连接
         for websocket in list(self.connections.values()):
-            try:
-                # 检查连接状态的兼容性方法
-                if hasattr(websocket, 'closed'):
-                    is_closed = websocket.closed
-                else:
-                    is_closed = getattr(websocket, 'close_code', None) is not None
-                
-                if not is_closed:
-                    await websocket.close()
-            except Exception as e:
-                logger.debug(f"Error closing websocket: {e}")
+            await close_websocket_safely(websocket)
         
         # 触发关闭事件来停止服务器主循环
         self.shutdown_event.set()
