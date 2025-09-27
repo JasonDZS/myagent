@@ -719,6 +719,15 @@ class ToolCallAgent(ReActAgent):
     async def run(self, request: str | None = None) -> str:
         """Run the agent with cleanup when done."""
         try:
-            return await super().run(request)
+            result = await super().run(request)
+            
+            # Check if we reached max steps and need to generate summary
+            if self.current_step >= self.max_steps and self.state != AgentState.FINISHED:
+                logger.info(f"🏁 Reached max steps ({self.max_steps}), generating final summary...")
+                await self._generate_final_summary()
+                await self._send_llm_message_event()
+                self.state = AgentState.FINISHED
+            
+            return result
         finally:
             await self.cleanup()
