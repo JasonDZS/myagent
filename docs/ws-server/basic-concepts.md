@@ -192,5 +192,5 @@ sequenceDiagram
 - [快速开始指南](./quick-start.md) - 5分钟上手WebSocket集成
 - [用户确认机制](./user-confirmation.md) - 详细的确认流程实现
 - [React集成指南](./react-integration.md) - React框架集成示例
-- [Vue集成指南](./vue-integration.md) - Vue框架集成示例
-- [故障排除](./troubleshooting.md) - 常见问题解决方案
+- [数据可视化集成](./visualization-integration.md) - 图表展示功能
+- [客户端状态管理](./client-state-management.md) - 状态保存和恢复

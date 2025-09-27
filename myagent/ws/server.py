@@ -20,6 +20,7 @@ from .events import SystemEvents
 from .events import UserEvents
 from .events import create_event
 from .session import AgentSession
+from .state_manager import StateManager
 from .utils import close_websocket_safely
 from .utils import is_websocket_closed
 from .utils import send_websocket_message
@@ -33,6 +34,7 @@ class AgentWebSocketServer:
         agent_factory_func: Callable[[], BaseAgent],
         host: str = "localhost",
         port: int = 8080,
+        state_secret_key: str = None,
     ):
         self.agent_factory_func = agent_factory_func
         self.host = host
@@ -41,6 +43,13 @@ class AgentWebSocketServer:
         self.connections: dict[str, WebSocketServerProtocol] = {}
         self.running = False
         self.shutdown_event = asyncio.Event()
+        
+        # Initialize state manager for client-side state storage
+        if state_secret_key is None:
+            import secrets
+            state_secret_key = secrets.token_hex(32)
+            logger.warning("Generated random state secret key. For production, provide a fixed key.")
+        self.state_manager = StateManager(state_secret_key)
 
     async def handle_connection(
         self, websocket: WebSocketServerProtocol, path: str | None = None
@@ -126,12 +135,22 @@ class AgentWebSocketServer:
             logger.info(f"Handling CANCEL event for session {session_id}")
             await self._cancel_session(session_id)
 
+        elif event_type == UserEvents.RECONNECT_WITH_STATE:
+            logger.info("Handling RECONNECT_WITH_STATE event")
+            await self._handle_reconnect_with_state(websocket, connection_id, message)
+
+        elif event_type == UserEvents.REQUEST_STATE and session_id:
+            logger.info(f"Handling REQUEST_STATE event for session {session_id}")
+            await self._handle_request_state(websocket, session_id, message)
+
         else:
             logger.warning(
                 f"Unknown event type or missing session_id: event={event_type}, session_id={session_id}"
             )
             logger.warning(
-                f"Available event types: CREATE_SESSION={UserEvents.CREATE_SESSION}, MESSAGE={UserEvents.MESSAGE}, RESPONSE={UserEvents.RESPONSE}, CANCEL={UserEvents.CANCEL}"
+                f"Available event types: CREATE_SESSION={UserEvents.CREATE_SESSION}, MESSAGE={UserEvents.MESSAGE}, "
+                f"RESPONSE={UserEvents.RESPONSE}, CANCEL={UserEvents.CANCEL}, "
+                f"RECONNECT_WITH_STATE={UserEvents.RECONNECT_WITH_STATE}, REQUEST_STATE={UserEvents.REQUEST_STATE}"
             )
             await self._send_event(
                 websocket,
@@ -453,6 +472,182 @@ class AgentWebSocketServer:
             "active_sessions": active_sessions,
             "server_time": datetime.now().isoformat(),
         }
+
+    async def _handle_reconnect_with_state(
+        self,
+        websocket: WebSocketServerProtocol,
+        connection_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        """Handle reconnection with client-provided state."""
+        try:
+            signed_state = message.get("signed_state")
+            if not signed_state:
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        SystemEvents.ERROR,
+                        content="Missing signed_state in reconnect request",
+                    ),
+                )
+                return
+
+            # Verify the signed state
+            is_valid, state_data, error_msg = self.state_manager.verify_state(signed_state)
+            if not is_valid:
+                logger.warning(f"Invalid state in reconnect request: {error_msg}")
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        SystemEvents.ERROR,
+                        content=f"Invalid state: {error_msg}",
+                    ),
+                )
+                return
+
+            # Check if session is already active
+            original_session_id = state_data.get("session_id")
+            if original_session_id and original_session_id in self.sessions:
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        AgentEvents.ERROR,
+                        content="Session already active on another connection",
+                    ),
+                )
+                return
+
+            # Create new session with new ID
+            new_session_id = str(uuid.uuid4())
+            
+            # Create agent using factory
+            agent = self.agent_factory_func()
+
+            # Create session
+            session = AgentSession(
+                session_id=new_session_id,
+                connection_id=connection_id,
+                agent=agent,
+                websocket=websocket,
+            )
+
+            # Restore state to session
+            restore_success = self.state_manager.restore_session_from_state(session, state_data)
+            if not restore_success:
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        SystemEvents.ERROR,
+                        content="Failed to restore session state",
+                    ),
+                )
+                return
+
+            # Add session to active sessions
+            self.sessions[new_session_id] = session
+
+            # Calculate session statistics
+            active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
+            total_sessions = len(self.sessions)
+
+            logger.info(
+                f"Restored session {new_session_id} from client state (original: {original_session_id}) "
+                f"for connection {connection_id} | Active sessions: {active_sessions}/{total_sessions}"
+            )
+
+            # Send restoration confirmation
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.STATE_RESTORED,
+                    session_id=new_session_id,
+                    content="Session state restored successfully",
+                    metadata={
+                        "original_session_id": original_session_id,
+                        "restored_step": state_data.get("current_step", 0),
+                        "message_count": len(json.loads(state_data.get("memory_snapshot", "[]"))),
+                        "agent_name": getattr(agent, "name", "unknown"),
+                        "connection_id": connection_id,
+                        "warnings": [] if restore_success else ["Some state restoration issues occurred"]
+                    },
+                ),
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to handle reconnect with state: {e}")
+            await self._send_event(
+                websocket,
+                create_event(
+                    SystemEvents.ERROR,
+                    content=f"Reconnection failed: {str(e)}",
+                ),
+            )
+
+    async def _handle_request_state(
+        self,
+        websocket: WebSocketServerProtocol,
+        session_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        """Handle request to export current session state."""
+        try:
+            session = self.sessions.get(session_id)
+            if not session:
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        AgentEvents.ERROR,
+                        session_id=session_id,
+                        content="Session not found",
+                    ),
+                )
+                return
+
+            if not session.is_active():
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        AgentEvents.ERROR,
+                        session_id=session_id,
+                        content="Session is not active",
+                    ),
+                )
+                return
+
+            # Create state snapshot
+            state_data = self.state_manager.create_state_snapshot(session)
+            
+            # Sign the state
+            signed_state = self.state_manager.sign_state(state_data)
+
+            # Send signed state to client
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.STATE_EXPORTED,
+                    session_id=session_id,
+                    content="Session state exported successfully",
+                    metadata={
+                        "signed_state": signed_state,
+                        "state_size": len(json.dumps(signed_state)),
+                        "message_count": len(json.loads(state_data.get("memory_snapshot", "[]"))),
+                        "current_step": state_data.get("current_step", 0),
+                    },
+                ),
+            )
+
+            logger.info(f"Exported state for session {session_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to export session state: {e}")
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content=f"Failed to export state: {str(e)}",
+                ),
+            )
 
     async def shutdown(self) -> None:
         """Gracefully shutdown server"""

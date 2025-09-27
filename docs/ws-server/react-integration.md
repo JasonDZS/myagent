@@ -1207,7 +1207,414 @@ export default App;
 
 ## 高级功能
 
-### 1. 消息历史记录
+### 1. 客户端状态管理 Hook
+
+管理会话状态的导出和恢复功能：
+
+```typescript
+// hooks/useStateManager.ts
+import { useState, useCallback, useRef, useEffect } from 'react';
+
+interface SignedState {
+  state: {
+    session_id: string;
+    current_step: number;
+    agent_state: string;
+    created_at: string;
+    memory_snapshot: string;
+    tool_states: Record<string, any>;
+    metadata: {
+      agent_name: string;
+      agent_config: any;
+      session_state: string;
+    };
+  };
+  timestamp: number;
+  signature: string;
+  version: string;
+  checksum: string;
+}
+
+interface SavedSession {
+  sessionId: string;
+  savedAt: string;
+  metadata: {
+    agent_name: string;
+    message_count: number;
+    current_step: number;
+  };
+}
+
+export function useStateManager(
+  websocket: WebSocket | null,
+  sessionId: string | null
+) {
+  const [savedSessions, setSavedSessions] = useState<SavedSession[]>([]);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+  
+  // 导出状态
+  const exportState = useCallback(async (): Promise<boolean> => {
+    if (!websocket || !sessionId || websocket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    
+    setIsExporting(true);
+    
+    return new Promise((resolve) => {
+      const message = {
+        event: 'user.request_state',
+        session_id: sessionId,
+        timestamp: new Date().toISOString()
+      };
+      
+      websocket.send(JSON.stringify(message));
+      
+      const handleStateExported = (event: MessageEvent) => {
+        const data = JSON.parse(event.data);
+        
+        if (data.event === 'agent.state_exported' && data.session_id === sessionId) {
+          const signedState = data.metadata?.signed_state;
+          
+          if (signedState) {
+            saveStateToLocalStorage(sessionId, signedState, data.metadata);
+            refreshSavedSessions();
+            setIsExporting(false);
+            websocket.removeEventListener('message', handleStateExported);
+            resolve(true);
+          } else {
+            setIsExporting(false);
+            websocket.removeEventListener('message', handleStateExported);
+            resolve(false);
+          }
+        }
+      };
+      
+      websocket.addEventListener('message', handleStateExported);
+      
+      // 10秒超时
+      setTimeout(() => {
+        setIsExporting(false);
+        websocket.removeEventListener('message', handleStateExported);
+        resolve(false);
+      }, 10000);
+    });
+  }, [websocket, sessionId]);
+  
+  // 恢复状态
+  const restoreState = useCallback(async (targetSessionId: string): Promise<string | null> => {
+    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+      return null;
+    }
+    
+    const signedState = loadStateFromLocalStorage(targetSessionId);
+    if (!signedState) {
+      return null;
+    }
+    
+    setIsRestoring(true);
+    
+    return new Promise((resolve) => {
+      const message = {
+        event: 'user.reconnect_with_state',
+        signed_state: signedState,
+        timestamp: new Date().toISOString()
+      };
+      
+      websocket.send(JSON.stringify(message));
+      
+      const handleStateRestored = (event: MessageEvent) => {
+        const data = JSON.parse(event.data);
+        
+        if (data.event === 'agent.state_restored') {
+          const newSessionId = data.session_id;
+          setIsRestoring(false);
+          websocket.removeEventListener('message', handleStateRestored);
+          resolve(newSessionId);
+        } else if (data.event === 'system.error') {
+          setIsRestoring(false);
+          websocket.removeEventListener('message', handleStateRestored);
+          resolve(null);
+        }
+      };
+      
+      websocket.addEventListener('message', handleStateRestored);
+      
+      // 10秒超时
+      setTimeout(() => {
+        setIsRestoring(false);
+        websocket.removeEventListener('message', handleStateRestored);
+        resolve(null);
+      }, 10000);
+    });
+  }, [websocket]);
+  
+  // 保存状态到本地存储
+  const saveStateToLocalStorage = useCallback((
+    sessionId: string, 
+    signedState: SignedState,
+    metadata: any
+  ) => {
+    const key = `myagent_session_${sessionId}`;
+    const data = {
+      signedState,
+      savedAt: new Date().toISOString(),
+      metadata: {
+        agent_name: metadata.agent_name || 'Unknown Agent',
+        message_count: metadata.message_count || 0,
+        current_step: metadata.current_step || 0
+      }
+    };
+    
+    try {
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (error) {
+      console.error('Failed to save state to localStorage:', error);
+    }
+  }, []);
+  
+  // 从本地存储加载状态
+  const loadStateFromLocalStorage = useCallback((sessionId: string): SignedState | null => {
+    const key = `myagent_session_${sessionId}`;
+    
+    try {
+      const data = localStorage.getItem(key);
+      if (data) {
+        const parsed = JSON.parse(data);
+        return parsed.signedState;
+      }
+    } catch (error) {
+      console.error('Failed to load state from localStorage:', error);
+    }
+    
+    return null;
+  }, []);
+  
+  // 刷新已保存的会话列表
+  const refreshSavedSessions = useCallback(() => {
+    const sessions: SavedSession[] = [];
+    
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('myagent_session_')) {
+          const sessionId = key.replace('myagent_session_', '');
+          const data = localStorage.getItem(key);
+          if (data) {
+            const parsed = JSON.parse(data);
+            sessions.push({
+              sessionId,
+              savedAt: parsed.savedAt,
+              metadata: parsed.metadata
+            });
+          }
+        }
+      }
+      
+      // 按保存时间倒序排列
+      sessions.sort((a, b) => 
+        new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime()
+      );
+      
+      setSavedSessions(sessions);
+    } catch (error) {
+      console.error('Failed to refresh saved sessions:', error);
+    }
+  }, []);
+  
+  // 删除已保存的会话
+  const deleteSavedSession = useCallback((sessionId: string) => {
+    const key = `myagent_session_${sessionId}`;
+    localStorage.removeItem(key);
+    refreshSavedSessions();
+  }, [refreshSavedSessions]);
+  
+  // 组件挂载时刷新会话列表
+  useEffect(() => {
+    refreshSavedSessions();
+  }, [refreshSavedSessions]);
+  
+  return {
+    savedSessions,
+    isExporting,
+    isRestoring,
+    exportState,
+    restoreState,
+    refreshSavedSessions,
+    deleteSavedSession
+  };
+}
+```
+
+### 使用状态管理的完整示例
+
+```typescript
+// components/ChatWithStateManagement.tsx
+import React, { useState } from 'react';
+import { useMyAgent } from '../hooks/useMyAgent';
+import { useStateManager } from '../hooks/useStateManager';
+
+const ChatWithStateManagement: React.FC = () => {
+  const {
+    connected,
+    sessionId,
+    messages,
+    sendMessage,
+    thinking,
+    error,
+    pendingConfirmation,
+    respondToConfirmation,
+    websocket
+  } = useMyAgent();
+  
+  const {
+    savedSessions,
+    isExporting,
+    isRestoring,
+    exportState,
+    restoreState,
+    refreshSavedSessions,
+    deleteSavedSession
+  } = useStateManager(websocket, sessionId);
+  
+  const [inputMessage, setInputMessage] = useState('');
+  const [showSavedSessions, setShowSavedSessions] = useState(false);
+  
+  const handleSendMessage = async () => {
+    if (inputMessage.trim()) {
+      await sendMessage(inputMessage);
+      setInputMessage('');
+    }
+  };
+  
+  const handleExportState = async () => {
+    const success = await exportState();
+    if (success) {
+      alert('会话状态已保存！');
+    } else {
+      alert('状态保存失败');
+    }
+  };
+  
+  const handleRestoreState = async (targetSessionId: string) => {
+    const newSessionId = await restoreState(targetSessionId);
+    if (newSessionId) {
+      alert(`会话已恢复！新会话ID: ${newSessionId}`);
+      setShowSavedSessions(false);
+    } else {
+      alert('会话恢复失败');
+    }
+  };
+  
+  return (
+    <div className="chat-container">
+      <div className="chat-header">
+        <h2>MyAgent Chat</h2>
+        <div className="session-controls">
+          <span>会话: {sessionId || '未连接'}</span>
+          <button 
+            onClick={handleExportState} 
+            disabled={!sessionId || isExporting}
+          >
+            {isExporting ? '保存中...' : '保存状态'}
+          </button>
+          <button 
+            onClick={() => setShowSavedSessions(!showSavedSessions)}
+          >
+            已保存会话 ({savedSessions.length})
+          </button>
+        </div>
+      </div>
+      
+      {showSavedSessions && (
+        <div className="saved-sessions">
+          <h3>已保存的会话</h3>
+          {savedSessions.length === 0 ? (
+            <p>暂无保存的会话</p>
+          ) : (
+            savedSessions.map(session => (
+              <div key={session.sessionId} className="session-item">
+                <div className="session-info">
+                  <span className="agent-name">
+                    {session.metadata.agent_name}
+                  </span>
+                  <span className="save-time">
+                    {new Date(session.savedAt).toLocaleString()}
+                  </span>
+                  <span className="message-count">
+                    {session.metadata.message_count} 条消息
+                  </span>
+                </div>
+                <div className="session-actions">
+                  <button 
+                    onClick={() => handleRestoreState(session.sessionId)}
+                    disabled={isRestoring}
+                  >
+                    {isRestoring ? '恢复中...' : '恢复'}
+                  </button>
+                  <button 
+                    onClick={() => deleteSavedSession(session.sessionId)}
+                    className="delete-btn"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+      
+      <div className="messages">
+        {messages.map(msg => (
+          <div key={msg.id} className={`message ${msg.type}`}>
+            <span className="content">{msg.content}</span>
+            <span className="timestamp">
+              {msg.timestamp.toLocaleTimeString()}
+            </span>
+          </div>
+        ))}
+        {thinking && <div className="thinking">AI 正在思考...</div>}
+      </div>
+      
+      {pendingConfirmation && (
+        <div className="confirmation-dialog">
+          <h4>需要确认</h4>
+          <p>{pendingConfirmation.message}</p>
+          <div className="confirmation-actions">
+            <button onClick={() => respondToConfirmation(true)}>
+              确认
+            </button>
+            <button onClick={() => respondToConfirmation(false)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+      
+      <div className="input-area">
+        <input
+          type="text"
+          value={inputMessage}
+          onChange={(e) => setInputMessage(e.target.value)}
+          onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+          placeholder="输入消息..."
+          disabled={!connected}
+        />
+        <button onClick={handleSendMessage} disabled={!connected}>
+          发送
+        </button>
+      </div>
+      
+      {error && <div className="error">错误: {error}</div>}
+    </div>
+  );
+};
+
+export default ChatWithStateManagement;
+```
+
+### 2. 消息历史记录
 
 ```typescript
 // hooks/useMessageHistory.ts
@@ -1442,5 +1849,5 @@ export class WebSocketErrorBoundary extends React.Component<
 ## 下一步
 
 - 查看 [用户确认机制详细说明](./user-confirmation.md)
-- 了解 [Vue.js 集成方案](./vue-integration.md) 
-- 参考 [故障排除指南](./troubleshooting.md)
+- 了解 [数据可视化集成](./visualization-integration.md) 
+- 参考 [基础概念文档](./basic-concepts.md)

@@ -383,14 +383,113 @@ uv run python -m myagent.cli.server server your_agent.py --host localhost --port
 🎯 Agent回答: 你好！我是 MyAgent，一个智能助手...
 ```
 
-## 6. 下一步
+## 6. 客户端状态管理 (可选)
+
+如果你需要在客户端保存会话状态以便离线后恢复，可以使用状态管理功能：
+
+### 状态导出
+
+```javascript
+// 导出当前会话状态
+function exportState() {
+    if (!sessionId) return;
+    
+    const message = {
+        event: 'user.request_state',
+        session_id: sessionId,
+        timestamp: new Date().toISOString()
+    };
+    ws.send(JSON.stringify(message));
+}
+
+// 监听状态导出响应
+function handleMessage(data) {
+    const { event } = data;
+    
+    if (event === 'agent.state_exported') {
+        const signedState = data.metadata?.signed_state;
+        if (signedState) {
+            // 保存到本地存储
+            localStorage.setItem(`session_${sessionId}`, JSON.stringify(signedState));
+            console.log('✅ 状态已保存');
+        }
+    }
+}
+```
+
+### 状态恢复
+
+```javascript
+// 从本地存储恢复状态
+function restoreState(originalSessionId) {
+    const stateData = localStorage.getItem(`session_${originalSessionId}`);
+    if (!stateData) return;
+    
+    const signedState = JSON.parse(stateData);
+    const message = {
+        event: 'user.reconnect_with_state',
+        signed_state: signedState,
+        timestamp: new Date().toISOString()
+    };
+    ws.send(JSON.stringify(message));
+}
+
+// 监听状态恢复响应
+function handleMessage(data) {
+    const { event } = data;
+    
+    if (event === 'agent.state_restored') {
+        sessionId = data.session_id;
+        console.log(`✅ 会话已恢复: ${sessionId}`);
+        console.log(`恢复步骤: ${data.metadata?.restored_step}`);
+    }
+}
+```
+
+### Python 状态管理示例
+
+```python
+import json
+
+class StateManager:
+    def __init__(self, client):
+        self.client = client
+        self.local_states = {}
+    
+    async def export_state(self, session_id):
+        """导出会话状态"""
+        message = {
+            'event': 'user.request_state',
+            'session_id': session_id,
+            'timestamp': datetime.now().isoformat()
+        }
+        await self.client.send_message(message)
+    
+    async def restore_state(self, signed_state):
+        """恢复会话状态"""
+        message = {
+            'event': 'user.reconnect_with_state',
+            'signed_state': signed_state,
+            'timestamp': datetime.now().isoformat()
+        }
+        await self.client.send_message(message)
+    
+    def save_state_to_file(self, session_id, signed_state):
+        """保存状态到文件"""
+        filename = f"session_{session_id}.json"
+        with open(filename, 'w') as f:
+            json.dump(signed_state, f, indent=2)
+        print(f"✅ 状态已保存到 {filename}")
+```
+
+## 7. 下一步
 
 现在你已经成功建立了基本连接！接下来你可以：
 
+- 学习 [客户端状态管理](./client-state-management.md) - 完整的状态管理功能
 - 学习 [用户确认机制](./user-confirmation.md) - 处理需要用户确认的操作
 - 查看 [React集成示例](./react-integration.md) - 在React应用中使用
-- 查看 [Vue集成示例](./vue-integration.md) - 在Vue应用中使用
-- 了解 [错误处理最佳实践](./troubleshooting.md) - 生产环境的考虑
+- 了解 [数据可视化集成](./visualization-integration.md) - 图表展示功能
 
 ## 故障排除
 
@@ -406,4 +505,4 @@ uv run python -m myagent.cli.server server your_agent.py --host localhost --port
 - 查看服务器日志获取详细错误信息
 - 确认Agent配置正确
 
-更多问题请参考 [完整故障排除指南](./troubleshooting.md)。
+如有其他问题，请查看 [基础概念文档](./basic-concepts.md) 了解更多技术细节。

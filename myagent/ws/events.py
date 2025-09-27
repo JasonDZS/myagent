@@ -29,6 +29,8 @@ class UserEvents:
     CANCEL = "user.cancel"
     CREATE_SESSION = "user.create_session"
     RECONNECT = "user.reconnect"
+    RECONNECT_WITH_STATE = "user.reconnect_with_state"
+    REQUEST_STATE = "user.request_state"
 
 
 class AgentEvents:
@@ -46,6 +48,8 @@ class AgentEvents:
     SESSION_CREATED = "agent.session_created"
     SESSION_END = "agent.session_end"
     LLM_MESSAGE = "agent.llm_message"
+    STATE_EXPORTED = "agent.state_exported"
+    STATE_RESTORED = "agent.state_restored"
 
 
 class SystemEvents:

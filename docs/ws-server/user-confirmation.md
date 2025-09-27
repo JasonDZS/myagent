@@ -646,4 +646,4 @@ const handleConfirm = async (confirmed) => {
 - 检查工具的 `user_confirm` 设置
 - 确认前端正确处理了响应
 
-更多问题请参考 [完整故障排除指南](./troubleshooting.md)。
+更多问题请参考 [基础概念文档](./basic-concepts.md) 了解更多技术细节。
