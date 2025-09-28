@@ -21,7 +21,7 @@ from myagent.tool import ToolCollection
 from .react import ReActAgent
 
 try:
-    from myagent.trace import get_trace_manager
+    from myagent.trace import get_ws_session_context
 
     TRACE_AVAILABLE = True
 except ImportError:
@@ -324,9 +324,8 @@ class ToolCallAgent(ReActAgent):
             # Try to get WebSocket session from trace manager
             if TRACE_AVAILABLE:
                 try:
-                    trace_manager = get_trace_manager()
-                    if hasattr(trace_manager, "ws_session"):
-                        ws_session = trace_manager.ws_session
+                    from myagent.trace import get_ws_session_context
+                    ws_session = get_ws_session_context()
                 except Exception as e:
                     logger.debug(f"Could not get WebSocket session: {e}")
 
@@ -628,9 +627,9 @@ class ToolCallAgent(ReActAgent):
         # Try to get WebSocket session from trace manager
         if TRACE_AVAILABLE:
             try:
-                trace_manager = get_trace_manager()
-                if hasattr(trace_manager, "ws_session"):
-                    ws_session = trace_manager.ws_session
+                from myagent.trace import get_ws_session_context
+                ws_session = get_ws_session_context()
+                logger.debug(f"WebSocket session in think(): {ws_session is not None}")
             except Exception as e:
                 logger.debug(f"Could not get WebSocket session: {e}")
 
@@ -662,9 +661,8 @@ class ToolCallAgent(ReActAgent):
         # Try to get WebSocket session from trace manager
         if TRACE_AVAILABLE:
             try:
-                trace_manager = get_trace_manager()
-                if hasattr(trace_manager, "ws_session"):
-                    ws_session = trace_manager.ws_session
+                from myagent.trace import get_ws_session_context
+                ws_session = get_ws_session_context()
             except Exception as e:
                 logger.debug(f"Could not get WebSocket session for LLM_MESSAGE: {e}")
 

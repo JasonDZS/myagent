@@ -171,8 +171,16 @@ class BaseAgent(BaseModel, ABC):
                 }
             )
 
+            # Get WebSocket session from context if available
+            ws_session = None
+            try:
+                from myagent.trace import get_ws_session_context
+                ws_session = get_ws_session_context()
+            except (ImportError, Exception):
+                pass
+
             async with trace_manager.trace(
-                name=f"{self.name}_execution", request=request, metadata=metadata
+                name=f"{self.name}_execution", request=request, metadata=metadata, ws_session=ws_session
             ) as trace_ctx:
                 return await self._run_with_tracing(request, trace_ctx)
         else:

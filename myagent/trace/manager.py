@@ -25,6 +25,10 @@ _current_trace: contextvars.ContextVar[Trace | None] = contextvars.ContextVar(
 _current_run: contextvars.ContextVar[Run | None] = contextvars.ContextVar(
     "current_run", default=None
 )
+# Context variable for WebSocket session (for multi-session support)
+_current_ws_session: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "current_ws_session", default=None
+)
 
 
 class TraceManager:
@@ -41,7 +45,7 @@ class TraceManager:
         self.storage = storage or InMemoryTraceStorage()
         self.auto_save = auto_save
         self._active_traces: dict[str, Trace] = {}
-        # WebSocket session for streaming support
+        # DEPRECATED: Use set_ws_session_context() instead for multi-session support
         self.ws_session = None
 
     @asynccontextmanager
@@ -50,6 +54,7 @@ class TraceManager:
         name: str,
         request: str | None = None,
         metadata: TraceMetadata | dict[str, Any] | None = None,
+        ws_session: Any | None = None,
         **kwargs,
     ):
         """
@@ -59,6 +64,7 @@ class TraceManager:
             name: Name/description of the trace
             request: Original user request
             metadata: Trace metadata
+            ws_session: WebSocket session for streaming support
             **kwargs: Additional metadata fields
         """
         # Create trace metadata
@@ -78,6 +84,11 @@ class TraceManager:
 
         # Set trace in context
         token = _current_trace.set(trace)
+        
+        # Set WebSocket session in context if provided
+        ws_token = None
+        if ws_session is not None:
+            ws_token = _current_ws_session.set(ws_session)
 
         try:
             logger.info(f"Starting trace: {name} (ID: {trace.id})")
@@ -98,9 +109,11 @@ class TraceManager:
             if self.auto_save:
                 await self.storage.save_trace(trace)
 
-            # Clean up
+            # Clean up context variables
             self._active_traces.pop(trace.id, None)
             _current_trace.reset(token)
+            if ws_token is not None:
+                _current_ws_session.reset(ws_token)
 
     @asynccontextmanager
     async def run(
@@ -265,6 +278,38 @@ class TraceManager:
             if self.auto_save:
                 await self.storage.save_run(run)
 
+    def set_ws_session_context(self, ws_session: Any) -> None:
+        """
+        Set WebSocket session in current context for multi-session support.
+        
+        Args:
+            ws_session: WebSocket session object for streaming support
+        """
+        _current_ws_session.set(ws_session)
+
+    def get_ws_session_context(self) -> Any | None:
+        """
+        Get WebSocket session from current context.
+        
+        Returns:
+            WebSocket session object or None if not set
+        """
+        # Try context variable first (new multi-session approach)
+        ws_session = _current_ws_session.get()
+        if ws_session is not None:
+            return ws_session
+        
+        # Fallback to global session (for backward compatibility)
+        return self.ws_session
+
+    def clear_ws_session_context(self) -> None:
+        """Clear WebSocket session from current context."""
+        try:
+            _current_ws_session.set(None)
+        except LookupError:
+            # Context variable not set, ignore
+            pass
+
 
 # Global trace manager instance
 _global_trace_manager: TraceManager | None = None
@@ -314,3 +359,18 @@ def get_current_trace() -> Trace | None:
 def get_current_run() -> Run | None:
     """Get the current run from context."""
     return _current_run.get()
+
+
+def set_ws_session_context(ws_session: Any) -> None:
+    """Set WebSocket session in current context using global trace manager."""
+    get_trace_manager().set_ws_session_context(ws_session)
+
+
+def get_ws_session_context() -> Any | None:
+    """Get WebSocket session from current context using global trace manager."""
+    return get_trace_manager().get_ws_session_context()
+
+
+def clear_ws_session_context() -> None:
+    """Clear WebSocket session from current context using global trace manager."""
+    get_trace_manager().clear_ws_session_context()

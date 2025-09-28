@@ -122,15 +122,14 @@ class AgentSession:
             # Monitor Agent tool calls
             self._wrap_tool_calls()
 
-            # Set WebSocket session in trace manager for streaming support
+            # Set WebSocket session in trace context for streaming support
             try:
-                from myagent.trace import get_trace_manager
+                from myagent.trace import set_ws_session_context
 
-                trace_manager = get_trace_manager()
-                trace_manager.ws_session = self
-                logger.info("Set WebSocket session in trace manager for streaming")
+                set_ws_session_context(self)
+                logger.info(f"Set WebSocket session in trace context for streaming: session_id={self.session_id}")
             except Exception as e:
-                logger.debug(f"Could not set WebSocket session in trace manager: {e}")
+                logger.error(f"Could not set WebSocket session in trace context: {e}")
 
             # 执行 Agent
             if hasattr(self.agent, "arun"):
@@ -164,17 +163,15 @@ class AgentSession:
             logger.error(f"Agent execution error: {e}")
             raise
         finally:
-            # Clean up WebSocket session from trace manager
+            # Clean up WebSocket session from trace context
             try:
-                from myagent.trace import get_trace_manager
+                from myagent.trace import clear_ws_session_context
 
-                trace_manager = get_trace_manager()
-                if trace_manager.ws_session == self:
-                    trace_manager.ws_session = None
-                    logger.debug("Cleaned up WebSocket session from trace manager")
+                clear_ws_session_context()
+                logger.debug("Cleaned up WebSocket session from trace context")
             except Exception as e:
                 logger.debug(
-                    f"Could not clean up WebSocket session from trace manager: {e}"
+                    f"Could not clean up WebSocket session from trace context: {e}"
                 )
 
     def _wrap_tool_calls(self):
