@@ -83,13 +83,8 @@ class AgentSession:
             await self.current_task
 
         except asyncio.CancelledError:
-            await self._send_event(
-                create_event(
-                    AgentEvents.INTERRUPTED,
-                    session_id=self.session_id,
-                    content="Execution was cancelled",
-                )
-            )
+            # Don't send another interrupted event here, as it's already sent in cancel() method
+            logger.debug(f"Task cancelled for session {self.session_id}")
         except Exception as e:
             logger.error(f"Session {self.session_id} execution error: {e}")
             await self._send_event(
@@ -390,6 +385,24 @@ class AgentSession:
             self.current_task.cancel()
 
         self.state = "idle"
+        
+        # Reset agent state to allow reuse after cancellation
+        from myagent.schema import AgentState
+        if hasattr(self.agent, 'state'):
+            logger.info(
+                f"Resetting agent state from {self.agent.state} to IDLE after cancellation for session {self.session_id}"
+            )
+            self.agent.state = AgentState.IDLE
+            self.agent.current_step = 0
+            
+            # Clean incomplete tool_calls messages
+            if hasattr(self.agent, 'memory'):
+                messages_before = len(self.agent.memory.messages)
+                self.agent.memory.clean_incomplete_tool_calls()
+                messages_after = len(self.agent.memory.messages)
+                logger.info(
+                    f"Cleaned incomplete tool_calls after cancellation for session {self.session_id}: {messages_before} -> {messages_after} messages"
+                )
 
         await self._send_event(
             create_event(
