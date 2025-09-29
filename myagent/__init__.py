@@ -30,6 +30,9 @@ from .trace import trace_run
 from .trace import trace_tool_call
 from .type import *
 
+# WebSocket Management System
+from .manager import AgentManager, ServiceRegistry, ConnectionRouter, HealthMonitor
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -58,4 +61,9 @@ __all__ = [
     "trace_agent_step",
     "trace_run",
     "trace_tool_call",
+    # Management system
+    "AgentManager",
+    "ServiceRegistry",
+    "ConnectionRouter", 
+    "HealthMonitor",
 ]
