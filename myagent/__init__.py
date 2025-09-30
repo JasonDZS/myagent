@@ -33,6 +33,10 @@ from .type import *
 # WebSocket Management System
 from .manager import AgentManager, ServiceRegistry, ConnectionRouter, HealthMonitor
 
+# Deep Agents Capabilities
+from .middleware import DeepAgentMiddleware, PlanningMiddleware, FilesystemMiddleware, SubAgentMiddleware
+from .middleware.deep_agent import create_deep_agent
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -66,4 +70,10 @@ __all__ = [
     "ServiceRegistry",
     "ConnectionRouter", 
     "HealthMonitor",
+    # Deep Agents system
+    "DeepAgentMiddleware",
+    "PlanningMiddleware", 
+    "FilesystemMiddleware",
+    "SubAgentMiddleware",
+    "create_deep_agent",
 ]
