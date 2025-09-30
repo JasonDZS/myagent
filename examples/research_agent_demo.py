@@ -31,6 +31,7 @@ from myagent.tool.web_search import create_search_tools
 from myagent.tool.academic_search import create_academic_tools
 from myagent.tool.data_analysis import create_data_analysis_tools
 from myagent.tool.web_content import create_web_content_tools
+from myagent.tool.code_execution import create_code_execution_tools
 from myagent.trace import get_trace_manager, TraceExporter, TraceQueryEngine
 
 
@@ -67,7 +68,14 @@ async def create_research_agent():
         print("✅ 已加载网页内容分析工具 (BeautifulSoup)")
     except Exception as e:
         print(f"⚠️ 网页内容分析工具加载失败: {e}")
-    
+
+    try:
+        # 代码执行工具
+        tools.extend(create_code_execution_tools())
+        print("✅ 已加载代码执行工具 (Python)")
+    except Exception as e:
+        print(f"⚠️ 代码执行工具加载失败: {e}")
+
     print(f"\n🔧 总计加载 {len(tools)} 个工具")
     
     # 创建Deep Agent，集成所有工具
@@ -93,6 +101,7 @@ async def run_comprehensive_research(topic: str = "LLM的发展历程"):
     print("✅ 学术文献搜索 (arXiv, PubMed)")
     print("✅ 数据分析和趋势 (pandas, numpy)")
     print("✅ 网页内容抓取 (BeautifulSoup)")
+    print("✅ 代码执行 (Python)")
     print("✅ Deep Agents 完整架构")
     print("=" * 80)
     
@@ -128,21 +137,28 @@ async def run_comprehensive_research(topic: str = "LLM的发展历程"):
 - 进行统计分析和相关性分析
 - 生成数据驱动的洞察
 
-### 5. 网页内容深度分析 (使用 fetch_content 工具)
+### 5. 代码执行和计算 (使用 execute_code 工具)
+- 编写Python代码进行定量分析
+- 创建数据可视化和图表
+- 执行复杂的统计计算
+- 生成自定义分析脚本
+
+### 6. 网页内容深度分析 (使用 fetch_content 工具)
 - 抓取重要技术博客和文档内容
 - 分析官方发布和技术规格
 - 提取关键技术细节
 
-### 6. 综合报告生成 (使用文件系统工具)
+### 7. 综合报告生成 (使用文件系统工具)
 - 创建结构化的研究报告
 - 整合所有收集的信息
 - 提供数据支撑的结论和建议
 
-### 7. 执行要求
+### 8. 执行要求
 - 使用真实的API和数据源
 - 提供可验证的信息来源
 - 保持客观和专业的分析视角
 - 确保研究的完整性和准确性
+- 充分利用代码执行能力进行定量分析
 
 请严格按照Deep Agent的最佳实践执行：
 - 使用规划工具管理任务进度
@@ -242,6 +258,7 @@ async def main():
         print("✅ 学术文献搜索：arXiv 和 PubMed API")
         print("✅ 数据科学分析：pandas 和 numpy")
         print("✅ 网页内容抓取：BeautifulSoup 解析")
+        print("✅ 代码执行：Python 代码动态执行")
         print("✅ Deep Agents 架构：规划、文件系统、子智能体")
         print("✅ 真实数据源：可验证的信息来源")
         
