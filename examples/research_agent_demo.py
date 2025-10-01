@@ -85,8 +85,8 @@ async def create_research_agent():
         description="全功能研究智能体，集成网络搜索、学术搜索、数据分析和内容抓取"
     )
     
-    # 设置合适的最大步数
-    agent.max_steps = 15
+    # 设置足够的最大步数以完成完整研究流程
+    agent.max_steps = 50
     
     return agent
 
@@ -139,22 +139,37 @@ async def run_comprehensive_research(topic: str = "LLM的发展历程"):
 
 ### 5. 代码执行和计算 (使用 execute_code 工具)
 - 编写Python代码进行定量分析
-- 创建数据可视化和图表
+- **创建数据可视化和图表（使用matplotlib，图表会自动保存到 workspace/images/）**
 - 执行复杂的统计计算
 - 生成自定义分析脚本
+- 注意：所有 matplotlib 图表会自动保存，无需手动调用 savefig()
 
 ### 6. 网页内容深度分析 (使用 fetch_content 工具)
 - 抓取重要技术博客和文档内容
 - 分析官方发布和技术规格
 - 提取关键技术细节
 
-### 7. 综合报告生成 (使用文件系统工具)
-- 创建结构化的研究报告
-- 整合所有收集的信息
-- 提供数据支撑的结论和建议
+### 7. 数据和内容保存 (使用 write_file 工具 - 必须执行)
+**重要：所有收集的信息都必须保存到文件！**
+- 保存网络搜索结果到 `data/web_search_results.md`
+- 保存学术文献信息到 `data/academic_papers.md`
+- 保存数据分析结果到 `data/analysis_results.md`（包含对生成图表的引用说明）
+- 保存网页内容到 `data/web_content.md`
+- 保存代码执行结果到 `code/analysis_scripts.py` 和 `code/results.txt`
+- 注意：matplotlib图表会自动保存到 `workspace/images/` 目录
 
-### 8. 执行要求
+### 8. 综合报告生成 (使用 write_file 工具 - 必须执行)
+**最终必须生成完整的研究报告文件：**
+- 文件名：`final_report.md`
+- 包含完整的研究内容、数据分析、图表说明
+- **在报告中引用所有生成的图表（格式：`![图表说明](images/plot_xxx.png)`）**
+- 整合所有收集的信息和洞察
+- 提供数据支撑的结论和建议
+- 包含信息来源引用
+
+### 9. 执行要求
 - 使用真实的API和数据源
+- **每完成一个步骤，立即使用 write_file 保存结果**
 - 提供可验证的信息来源
 - 保持客观和专业的分析视角
 - 确保研究的完整性和准确性
@@ -163,8 +178,17 @@ async def run_comprehensive_research(topic: str = "LLM的发展历程"):
 请严格按照Deep Agent的最佳实践执行：
 - 使用规划工具管理任务进度
 - 充分利用所有可用的真实工具
+- **使用 write_file 工具保存所有中间结果和最终报告**
 - 创建详细的文档记录
 - 提供全面的研究成果
+
+## 完成标准
+只有当以下所有文件都创建完成后，才能使用 terminate 工具结束任务：
+✅ `llm_agent_research_plan.md` - 研究计划
+✅ `data/web_search_results.md` - 网络搜索结果
+✅ `data/academic_papers.md` - 学术文献
+✅ `data/analysis_results.md` - 数据分析结果
+✅ `final_report.md` - 完整的最终研究报告
 
 开始执行研究任务。
     """

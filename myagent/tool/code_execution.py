@@ -12,8 +12,10 @@
 import sys
 import io
 import asyncio
-from typing import Optional, Dict, Any
+import os
+from typing import Optional, Dict, Any, List
 from contextlib import redirect_stdout, redirect_stderr
+from pathlib import Path
 
 from pydantic import Field
 from myagent.tool.base_tool import BaseTool, ToolResult
@@ -42,21 +44,31 @@ class CodeExecutionTool(BaseTool):
 - 支持多行代码和函数定义
 - 变量在执行间持久化（会话状态）
 - 支持常用库：pandas, numpy, matplotlib等
+- 自动保存matplotlib图表到 workspace/images/ 目录
 
 示例代码:
 ```python
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 # 创建数据
 data = {'name': ['Alice', 'Bob'], 'age': [25, 30]}
 df = pd.DataFrame(data)
 print(df)
-print(f"平均年龄: {df['age'].mean()}")
+
+# 创建图表（将自动保存）
+plt.figure(figsize=(10, 6))
+plt.bar(df['name'], df['age'])
+plt.title('Age Distribution')
+plt.xlabel('Name')
+plt.ylabel('Age')
+# 不需要调用 plt.savefig()，工具会自动保存
 ```
 
 注意事项:
 - 代码在受限环境中执行
+- matplotlib图表会自动保存到 workspace/images/ 目录
 - 不支持文件系统操作（使用文件系统工具代替）
 - 超时后会自动终止执行
 - 错误会被捕获并在输出中显示
@@ -68,6 +80,9 @@ print(f"平均年龄: {df['age'].mean()}")
         super().__init__(**kwargs)
         # 初始化执行上下文（实例变量）
         self._execution_context = self._create_execution_context()
+        # 创建图片保存目录
+        self._images_dir = Path("workspace/images")
+        self._images_dir.mkdir(parents=True, exist_ok=True)
 
     def _create_execution_context(self) -> Dict[str, Any]:
         """创建执行上下文，导入常用库"""
@@ -84,6 +99,16 @@ print(f"平均年龄: {df['age'].mean()}")
             context['pandas'] = pd
             context['np'] = np
             context['numpy'] = np
+        except ImportError:
+            pass
+
+        # 尝试导入matplotlib并配置
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # 使用非交互式后端
+            import matplotlib.pyplot as plt
+            context['plt'] = plt
+            context['matplotlib'] = matplotlib
         except ImportError:
             pass
 
@@ -127,11 +152,12 @@ print(f"平均年龄: {df['age'].mean()}")
             # 执行结果
             result = None
             error_msg = None
+            saved_images: List[str] = []
 
             try:
                 # 使用 asyncio.wait_for 实现超时控制
                 async def _execute():
-                    nonlocal result, error_msg
+                    nonlocal result, error_msg, saved_images
 
                     # 重定向标准输出和错误输出
                     with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
@@ -140,6 +166,24 @@ print(f"平均年龄: {df['age'].mean()}")
                             compiled = compile(code, '<string>', 'exec')
                             # 在持久化的上下文中执行
                             exec(compiled, self._execution_context)
+
+                            # 检查是否有matplotlib图形需要保存
+                            if 'plt' in self._execution_context:
+                                import matplotlib.pyplot as plt
+                                # 获取所有打开的图形
+                                fig_nums = plt.get_fignums()
+                                if fig_nums:
+                                    for i, fig_num in enumerate(fig_nums):
+                                        fig = plt.figure(fig_num)
+                                        # 生成唯一文件名
+                                        import time
+                                        timestamp = int(time.time() * 1000)
+                                        filename = f"plot_{timestamp}_{i}.png"
+                                        filepath = self._images_dir / filename
+                                        fig.savefig(filepath, dpi=300, bbox_inches='tight')
+                                        saved_images.append(str(filepath))
+                                    # 关闭所有图形
+                                    plt.close('all')
 
                             # 尝试获取最后一个表达式的值
                             # 如果代码最后一行是表达式，尝试求值
@@ -182,9 +226,14 @@ print(f"平均年龄: {df['age'].mean()}")
             if stderr_output:
                 output_parts.append(f"错误输出:\n{stderr_output}")
 
+            # 显示保存的图片
+            if saved_images:
+                images_info = "\n".join([f"  - {img}" for img in saved_images])
+                output_parts.append(f"📊 已保存图片 ({len(saved_images)} 个):\n{images_info}")
+
             # 显示当前上下文中的变量（排除内置和模块）
             user_vars = {k: type(v).__name__ for k, v in self._execution_context.items()
-                        if not k.startswith('_') and not hasattr(v, '__module__') or k in ['pd', 'np']}
+                        if not k.startswith('_') and not hasattr(v, '__module__') or k in ['pd', 'np', 'plt']}
             if user_vars:
                 vars_info = ", ".join([f"{k}({v})" for k, v in user_vars.items()])
                 output_parts.append(f"\n当前会话变量: {vars_info}")

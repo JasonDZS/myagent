@@ -3,27 +3,65 @@
 Deep Agents Virtual File System
 
 Implements a virtual file system similar to DeepAgents' file tools.
-Provides ls, read_file, write_file, and edit_file capabilities for agent memory-based storage.
+Provides ls, read_file, write_file, and edit_file capabilities with persistent storage.
 """
 
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 import os
+from pathlib import Path
 
 from .base_tool import BaseTool, ToolResult
 
 
 class VirtualFileSystem:
     """
-    Virtual file system implementation using in-memory storage.
-    
-    Provides file operations that persist across agent execution within
-    the same session, enabling complex workflows that require file state.
+    Virtual file system implementation with persistent storage.
+
+    Provides file operations that persist across agent execution sessions.
+    Files are stored in a workspace directory on disk.
     """
-    
-    def __init__(self):
+
+    def __init__(self, workspace_dir: str = "workspace"):
+        """
+        Initialize the virtual file system.
+
+        Args:
+            workspace_dir: Directory to store files (default: "workspace")
+        """
+        self._workspace_dir = Path(workspace_dir)
+        self._workspace_dir.mkdir(exist_ok=True)
         self._files: Dict[str, str] = {}
+        self._load_files_from_disk()
     
+    def _load_files_from_disk(self) -> None:
+        """Load all existing files from workspace directory into memory."""
+        if not self._workspace_dir.exists():
+            return
+
+        for file_path in self._workspace_dir.rglob("*"):
+            if file_path.is_file():
+                try:
+                    relative_path = file_path.relative_to(self._workspace_dir)
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        self._files[str(relative_path)] = f.read()
+                except Exception:
+                    # Skip files that can't be read as text
+                    pass
+
+    def _save_to_disk(self, file_path: str, content: str) -> None:
+        """Save a file to disk."""
+        full_path = self._workspace_dir / file_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(full_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+    def _delete_from_disk(self, file_path: str) -> None:
+        """Delete a file from disk."""
+        full_path = self._workspace_dir / file_path
+        if full_path.exists():
+            full_path.unlink()
+
     def list_files(self) -> Dict[str, int]:
         """List all files with their sizes."""
         return {path: len(content) for path, content in self._files.items()}
@@ -56,8 +94,9 @@ class VirtualFileSystem:
         return '\n'.join(formatted_lines)
     
     def write_file(self, file_path: str, content: str) -> None:
-        """Write content to a file."""
+        """Write content to a file (both in memory and on disk)."""
         self._files[file_path] = content
+        self._save_to_disk(file_path, content)
     
     def edit_file(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
         """Edit file content by replacing strings."""
@@ -82,8 +121,9 @@ class VirtualFileSystem:
             updated_content = content.replace(old_string, new_string)
         else:
             updated_content = content.replace(old_string, new_string, 1)
-        
+
         self._files[file_path] = updated_content
+        self._save_to_disk(file_path, updated_content)
         return f"Replaced {1 if not replace_all else occurrences} occurrence(s)"
 
 
