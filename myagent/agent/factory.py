@@ -1,7 +1,7 @@
 """Factory helpers for constructing agents."""
 
 from collections.abc import Sequence
-from typing import cast
+from typing import cast, List
 
 from myagent.llm import LLM
 from myagent.schema import TOOL_CHOICE_TYPE
@@ -10,6 +10,7 @@ from myagent.tool import BaseTool
 from myagent.tool import Terminate
 from myagent.tool import ToolCollection
 from .toolcall import ToolCallAgent
+from .base import BaseAgent
 
 
 def _ensure_tool_collection(
@@ -149,3 +150,68 @@ def create_react_agent(
         max_observe=max_observe,
         **extra_fields,
     )
+
+
+def create_deep_agent(
+    tools: List[BaseTool] = None,
+    llm_config: dict = None,
+    name: str = "deep_agent",
+    description: str = "A Deep Agent with advanced capabilities"
+) -> BaseAgent:
+    """
+    Create a new Deep Agent with all capabilities enabled.
+
+    This function creates an agent with Deep Agent capabilities including:
+    - Task planning and management
+    - Virtual file system
+    - Sub-agent delegation
+    - Enhanced prompting
+
+    Args:
+        tools: Additional tools beyond Deep Agent built-ins
+        llm_config: LLM configuration (currently unused, uses config_name)
+        name: Agent name
+        description: Agent description
+
+    Returns:
+        Configured Deep Agent with all capabilities
+    """
+    # Import Deep Agent middleware
+    from myagent.middleware.deep_agent import DeepAgentMiddleware
+    from myagent.middleware import MiddlewareContext
+
+    # Get Deep Agent tools
+    deep_middleware = DeepAgentMiddleware()
+    deep_tools = deep_middleware.get_tools()
+
+    # Combine with additional tools
+    all_tools = deep_tools + (tools or [])
+
+    # Create LLM instance (LLM uses config_name, not keyword arguments)
+    llm = LLM(config_name=name.lower())
+
+    # Create base agent using create_toolcall_agent directly
+    agent = create_toolcall_agent(
+        name=name,
+        llm=llm,
+        tools=all_tools
+    )
+
+    # Set description
+    agent.description = description
+
+    # Build enhanced system prompt
+    context = MiddlewareContext(
+        agent=agent,
+        tools=all_tools,
+        system_prompt_parts=[],
+        metadata={}
+    )
+
+    enhanced_prompt = deep_middleware.get_system_prompt_addition(context)
+    if agent.system_prompt:
+        agent.system_prompt = f"{agent.system_prompt}\n\n{enhanced_prompt}"
+    else:
+        agent.system_prompt = enhanced_prompt
+
+    return agent

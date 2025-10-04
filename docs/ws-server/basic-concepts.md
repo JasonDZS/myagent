@@ -94,6 +94,15 @@ interface WebSocketMessage {
 | `system.heartbeat` | 心跳检测 | ❌ |
 | `system.error` | 系统级错误 | ❌ |
 
+### 状态管理事件
+
+| 事件 | 方向 | 描述 |
+|------|------|------|
+| `user.request_state` | 客户端 → 服务器 | 请求导出当前会话状态 |
+| `agent.state_exported` | 服务器 → 客户端 | 状态导出完成，包含签名状态 |
+| `user.reconnect_with_state` | 客户端 → 服务器 | 使用保存的状态重新连接 |
+| `agent.state_restored` | 服务器 → 客户端 | 状态恢复成功确认 |
+
 ## 交互流程
 
 ### 基本会话流程
@@ -153,6 +162,44 @@ sequenceDiagram
     A-->>WS: agent.tool_result
     WS-->>F: 执行结果
 ```
+
+## 核心组件
+
+### StateManager（状态管理器）
+
+`myagent.ws.state_manager.StateManager` 负责客户端状态管理：
+
+**功能：**
+- 状态快照创建 - `create_state_snapshot(session)`
+- 状态签名 - `sign_state(state_data)` 使用 HMAC-SHA256
+- 状态验证 - `verify_state(signed_state)` 验证签名和完整性
+- 会话恢复 - `restore_session_from_state(session, state_data)`
+
+**安全特性：**
+- HMAC-SHA256 签名防止篡改
+- 时间戳验证防止重放攻击（7天有效期）
+- SHA-256 校验和验证数据完整性
+- 自动清理敏感信息（API密钥、令牌等）
+- 状态大小限制（100KB，100条消息）
+
+**初始化：**
+```python
+from myagent.ws.server import AgentWebSocketServer
+
+server = AgentWebSocketServer(
+    agent_factory_func=create_agent,
+    state_secret_key="your-production-secret-key"  # 生产环境必须提供
+)
+```
+
+### WebSocket工具函数
+
+`myagent.ws.utils` 提供跨版本兼容的工具函数：
+
+- `is_websocket_closed(websocket)` - 检查连接状态（兼容新旧版本）
+- `send_websocket_message(websocket, message)` - 安全发送消息
+- `close_websocket_safely(websocket)` - 安全关闭连接
+- `get_websocket_info(websocket)` - 获取连接调试信息
 
 ## 环境变量配置
 

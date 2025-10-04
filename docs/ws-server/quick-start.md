@@ -367,6 +367,58 @@ uv run python -m myagent.cli.server server examples/ws_weather_agent.py --port 8
 uv run python -m myagent.cli.server server your_agent.py --host localhost --port 8080
 ```
 
+### 服务器端代码示例
+
+创建自己的 WebSocket Agent 服务器：
+
+```python
+# my_agent_server.py
+import asyncio
+from myagent import create_toolcall_agent
+from myagent.ws.server import AgentWebSocketServer
+from myagent.tool import BaseTool, ToolResult
+
+class MyTool(BaseTool):
+    name = "my_tool"
+    description = "示例工具"
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(output="工具执行成功")
+
+def create_agent():
+    """Agent工厂函数 - 每个会话创建一个新的Agent实例"""
+    tools = [MyTool()]
+    return create_toolcall_agent(
+        tools=tools,
+        name="my_agent",
+        description="我的智能助手"
+    )
+
+async def main():
+    # 创建WebSocket服务器
+    server = AgentWebSocketServer(
+        agent_factory_func=create_agent,
+        host="localhost",
+        port=8080,
+        state_secret_key="your-production-secret-key"  # 生产环境必须提供固定密钥
+    )
+
+    try:
+        # 启动服务器
+        await server.start_server()
+    except KeyboardInterrupt:
+        print("\n正在关闭服务器...")
+        await server.shutdown()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+启动服务器：
+```bash
+uv run python my_agent_server.py
+```
+
 ## 5. 测试连接
 
 1. **运行服务器**

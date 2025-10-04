@@ -13,6 +13,7 @@ from .agent import ReActAgent
 from .agent import ToolCallAgent
 from .agent import create_react_agent
 from .agent import create_toolcall_agent
+from .agent import create_deep_agent
 from .config import settings
 from .llm import LLM
 from .logger import logger
@@ -35,7 +36,6 @@ from .manager import AgentManager, ServiceRegistry, ConnectionRouter, HealthMoni
 
 # Deep Agents Capabilities
 from .middleware import DeepAgentMiddleware, PlanningMiddleware, FilesystemMiddleware, SubAgentMiddleware
-from .middleware.deep_agent import create_deep_agent
 
 __version__ = "0.1.0"
 

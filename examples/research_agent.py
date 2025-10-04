@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 加载环境变量
 load_dotenv()
 
-from myagent.middleware.deep_agent import create_deep_agent
+from myagent.agent import create_deep_agent
 from myagent.tool.base_tool import BaseTool, ToolResult
 from myagent.tool.web_search import create_search_tools
 from myagent.tool.academic_search import create_academic_tools

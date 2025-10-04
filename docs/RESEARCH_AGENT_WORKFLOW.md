@@ -75,7 +75,7 @@ graph TD
     P4_Integrate --> P4_Structure[构建报告结构]
     P4_Structure --> P4_WriteReport[使用 write_file 工具]
     P4_WriteReport --> P4_Content1[添加研究内容和分析]
-    P4_Content1 --> P4_Content2[嵌入图表引用<br/>![desc](images/plot_xxx.png)]
+    P4_Content1 --> P4_Content2[嵌入图表引用 Markdown格式]
     P4_Content2 --> P4_Content3[添加结论和建议]
     P4_Content3 --> P4_Final[生成 final_report.md]
 
