@@ -16,7 +16,7 @@ Deep Agent 是一个智能体包装器，自动集成以下能力：
 ### 基础使用
 
 ```python
-from myagent.middleware.deep_agent import create_deep_agent
+from myagent.agent import create_deep_agent
 
 # 创建 Deep Agent
 agent = create_deep_agent(
@@ -44,7 +44,7 @@ agent = create_toolcall_agent(
 
 **Deep Agent：**
 ```python
-from myagent.middleware.deep_agent import create_deep_agent
+from myagent.agent import create_deep_agent
 
 agent = create_deep_agent(
     tools=[CustomTool()],
@@ -487,7 +487,7 @@ agent = create_deep_agent(
 ### 高级配置
 
 ```python
-from myagent.middleware.deep_agent import create_deep_agent
+from myagent.agent import create_deep_agent
 
 agent = create_deep_agent(
     tools=[...],

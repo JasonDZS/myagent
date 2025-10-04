@@ -54,7 +54,7 @@ SERPER_API_KEY=your_serper_api_key
 
 ```python
 import asyncio
-from myagent.middleware.deep_agent import create_deep_agent
+from myagent.agent import create_deep_agent
 from myagent.tool.web_search import create_search_tools
 from myagent.tool.filesystem import get_filesystem_tools
 
@@ -100,7 +100,7 @@ uv run python simple_research.py
 
 ```python
 import asyncio
-from myagent.middleware.deep_agent import create_deep_agent
+from myagent.agent import create_deep_agent
 from myagent.tool.web_search import create_search_tools
 from myagent.tool.academic_search import create_academic_tools
 from myagent.tool.data_analysis import create_data_analysis_tools

@@ -188,7 +188,7 @@ result = await agent.run("执行任务")
 ### 2. 创建 Deep Agent
 
 ```python
-from myagent.middleware.deep_agent import create_deep_agent
+from myagent.agent import create_deep_agent
 
 agent = create_deep_agent(
     tools=[MyTool()],  # 可选
@@ -204,7 +204,7 @@ result = await agent.run("""
 ### 3. 创建研究智能体
 
 ```python
-from myagent.middleware.deep_agent import create_deep_agent
+from myagent.agent import create_deep_agent
 from myagent.tool.web_search import create_search_tools
 from myagent.tool.academic_search import create_academic_tools
 from myagent.tool.code_execution import create_code_execution_tools
