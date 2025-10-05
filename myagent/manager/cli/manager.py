@@ -424,5 +424,13 @@ def daemon(ctx, interval):
         pass
 
 
+# Import and register server commands
+from .api import api as api_cmd
+from .proxy import proxy as proxy_cmd
+
+cli.add_command(api_cmd, name='api')
+cli.add_command(proxy_cmd, name='proxy')
+
+
 if __name__ == '__main__':
     cli()

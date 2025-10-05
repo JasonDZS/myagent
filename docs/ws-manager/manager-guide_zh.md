@@ -814,7 +814,10 @@ async def main():
 
 ```bash
 # 启动管理器API服务器
-uv run python -m myagent.cli.manager api --port 8000
+myagent-manager api --port 8000
+
+# 或使用完整路径
+uv run python -m myagent.manager.cli api --port 8000
 ```
 
 ### API端点文档
@@ -911,43 +914,52 @@ curl http://localhost:8000/api/v1/connections/stats
 ### 管理器CLI
 
 ```bash
-# 启动管理器
-uv run python -m myagent.cli.manager start
+# 查看所有命令
+myagent-manager --help
+
+# 或使用完整模块路径
+uv run python -m myagent.manager.cli --help
+
+# 启动守护进程
+myagent-manager daemon
 
 # 启动API服务器
-uv run python -m myagent.cli.manager api --port 8000
-
-# 查看帮助
-uv run python -m myagent.cli.manager --help
+myagent-manager api --port 8000
 ```
 
 ### 服务操作CLI
 
 ```bash
 # 注册服务
-uv run python -m myagent.cli.manager service register \
-  --name my_service \
-  --agent-path /path/to/agent.py \
+myagent-manager register my_service /path/to/agent.py \
+  --host localhost \
   --port 8081 \
-  --tags production,chat
+  --tags production,chat \
+  --auto-start
 
 # 启动服务
-uv run python -m myagent.cli.manager service start my_service
+myagent-manager start my_service
 
 # 停止服务
-uv run python -m myagent.cli.manager service stop my_service
+myagent-manager stop my_service
 
 # 重启服务
-uv run python -m myagent.cli.manager service restart my_service
+myagent-manager restart my_service
 
 # 列出所有服务
-uv run python -m myagent.cli.manager service list
+myagent-manager list
+
+# 按状态筛选
+myagent-manager list --status running
 
 # 查看服务详情
-uv run python -m myagent.cli.manager service info my_service
+myagent-manager status my_service
 
-# 删除服务
-uv run python -m myagent.cli.manager service delete my_service
+# 查看系统统计
+myagent-manager stats
+
+# 注销服务
+myagent-manager unregister my_service
 ```
 
 ---
