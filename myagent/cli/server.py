@@ -9,8 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from myagent.logger import logger
-from myagent.ws.server import AgentWebSocketServer
+from ..logger import logger
+from ..ws.server import AgentWebSocketServer
 
 
 def load_agent_from_file(file_path: str) -> Callable[[], Any]:

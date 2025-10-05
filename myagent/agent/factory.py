@@ -3,12 +3,9 @@
 from collections.abc import Sequence
 from typing import cast, List
 
-from myagent.llm import LLM
-from myagent.schema import TOOL_CHOICE_TYPE
-from myagent.schema import ToolChoice
-from myagent.tool import BaseTool
-from myagent.tool import Terminate
-from myagent.tool import ToolCollection
+from ..llm import LLM
+from ..schema import TOOL_CHOICE_TYPE, ToolChoice
+from ..tool import BaseTool, Terminate, ToolCollection
 from .toolcall import ToolCallAgent
 from .base import BaseAgent
 

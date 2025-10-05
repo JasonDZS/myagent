@@ -398,30 +398,69 @@ def stats(ctx):
 @click.pass_context
 def daemon(ctx, interval):
     """Run MyAgent manager as a daemon."""
-    
+
     async def _daemon():
         manager = AgentManager(ctx.obj['db_path'])
-        
+
         try:
             await manager.start(health_check_interval=interval)
             console.print("🚀 MyAgent Manager daemon started", style="green")
             console.print(f"   Health check interval: {interval}s")
             console.print("   Press Ctrl+C to stop")
-            
+
             # Keep running until interrupted
             while True:
                 await asyncio.sleep(1)
-                
+
         except KeyboardInterrupt:
             console.print("\n🛑 Shutting down MyAgent Manager daemon...", style="yellow")
         finally:
             await manager.stop()
             console.print("✅ MyAgent Manager daemon stopped", style="green")
-    
+
     try:
         asyncio.run(_daemon())
     except KeyboardInterrupt:
         pass
+
+
+@cli.command('cleanup-connections')
+@click.option('--force', is_flag=True, help='Force cleanup without confirmation')
+@click.pass_context
+def cleanup_connections(ctx, force):
+    """Clean up stale connections."""
+
+    async def _cleanup():
+        manager = AgentManager(ctx.obj['db_path'])
+
+        try:
+            # Get all connections
+            connections = manager.get_active_connections()
+
+            if not connections:
+                console.print("✅ No connections to clean up", style="green")
+                return
+
+            console.print(f"Found {len(connections)} connection(s):", style="yellow")
+            for conn in connections:
+                console.print(f"  • {conn.connection_id} -> {conn.target_service_id}")
+
+            if not force:
+                confirm = console.input("\nClean up all connections? [y/N]: ")
+                if confirm.lower() != 'y':
+                    console.print("Aborted", style="yellow")
+                    return
+
+            # Clear all connections
+            for conn in connections:
+                manager.unregister_connection(conn.connection_id)
+
+            console.print(f"✅ Cleaned up {len(connections)} connection(s)", style="green")
+
+        finally:
+            await manager.stop()
+
+    asyncio.run(_cleanup())
 
 
 # Import and register server commands

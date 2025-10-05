@@ -1,11 +1,9 @@
-from abc import ABC
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 
 from pydantic import Field
 
-from myagent.llm import LLM
-from myagent.schema import AgentState
-from myagent.schema import Memory
+from ..llm import LLM
+from ..schema import AgentState, Memory
 from .base import BaseAgent
 
 

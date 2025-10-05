@@ -1,27 +1,19 @@
 import asyncio
 import json
 import os
-import re
 from typing import Any
 
 from pydantic import Field
 
-from myagent.exceptions import TokenLimitExceeded
-from myagent.logger import logger
-from myagent.prompt.toolcall import NEXT_STEP_PROMPT
-from myagent.prompt.toolcall import SUMMARY_PROMPT
-from myagent.prompt.toolcall import SYSTEM_PROMPT
-from myagent.schema import TOOL_CHOICE_TYPE
-from myagent.schema import AgentState
-from myagent.schema import Message
-from myagent.schema import ToolCall
-from myagent.schema import ToolChoice
-from myagent.tool import Terminate
-from myagent.tool import ToolCollection
+from ..exceptions import TokenLimitExceeded
+from ..logger import logger
+from ..prompt.toolcall import NEXT_STEP_PROMPT, SUMMARY_PROMPT, SYSTEM_PROMPT
+from ..schema import TOOL_CHOICE_TYPE, AgentState, Message, ToolCall, ToolChoice
+from ..tool import Terminate, ToolCollection
 from .react import ReActAgent
 
 try:
-    from myagent.trace import get_ws_session_context
+    from ..trace import get_ws_session_context
 
     TRACE_AVAILABLE = True
 except ImportError:
