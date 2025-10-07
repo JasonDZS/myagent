@@ -5,15 +5,11 @@ from typing import Any
 from pydantic import BaseModel
 from pydantic import Field
 
-from myagent.trace import RunType
-from myagent.trace import get_trace_manager
-
 
 class BaseTool(ABC, BaseModel):
     name: str
     description: str
     parameters: dict | None = None
-    enable_tracing: bool = Field(default=True, description="Enable execution tracing")
     user_confirm: bool = Field(
         default=False, description="Require user confirmation before execution"
     )
@@ -29,10 +25,7 @@ class BaseTool(ABC, BaseModel):
             if not confirmed:
                 return ToolResult(error="Tool execution cancelled by user")
 
-        if self.enable_tracing:
-            return await self._traced_execute(**kwargs)
-        else:
-            return await self.execute(**kwargs)
+        return await self.execute(**kwargs)
 
     async def _request_user_confirmation(self, **kwargs) -> bool:
         """Request user confirmation for tool execution."""
@@ -48,42 +41,6 @@ class BaseTool(ABC, BaseModel):
     def set_confirmation_handler(self, handler):
         """Set the confirmation handler for WebSocket sessions."""
         self._confirmation_handler = handler
-
-    async def _traced_execute(self, **kwargs) -> Any:
-        """Execute the tool with tracing enabled."""
-        trace_manager = get_trace_manager()
-
-        # Prepare inputs for tracing
-        inputs = dict(kwargs)
-
-        # Prepare metadata
-        metadata = {
-            "tool_description": self.description,
-            "tool_parameters": self.parameters,
-        }
-
-        async with trace_manager.run(
-            name=self.name, run_type=RunType.TOOL, inputs=inputs, **metadata
-        ) as run_ctx:
-            try:
-                result = await self.execute(**kwargs)
-
-                # Capture tool result
-                if result is not None:
-                    if hasattr(result, "output"):
-                        # Handle ToolResult objects
-                        run_ctx.outputs["output"] = str(result.output)
-                        if hasattr(result, "error") and result.error:
-                            run_ctx.outputs["error"] = result.error
-                            run_ctx.metadata["has_error"] = True
-                    else:
-                        run_ctx.outputs["result"] = str(result)
-
-                return result
-
-            except Exception as e:
-                run_ctx.fail(str(e), type(e).__name__)
-                raise
 
     @abstractmethod
     async def execute(self, **kwargs) -> Any:

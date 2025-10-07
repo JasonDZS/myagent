@@ -90,12 +90,6 @@ def create_toolcall_agent(
 
     agent_kwargs.update(extra_fields)
 
-    # If enable_tracing is False, disable tracing for all tools in the collection
-    if not agent_kwargs.get("enable_tracing", True):
-        for tool_instance in tool_collection.tool_map.values():
-            if hasattr(tool_instance, "enable_tracing"):
-                tool_instance.enable_tracing = False
-
     return ToolCallAgent(**agent_kwargs)
 
 
