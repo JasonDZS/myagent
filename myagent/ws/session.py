@@ -122,14 +122,15 @@ class AgentSession:
             # Monitor Agent tool calls
             self._wrap_tool_calls()
 
-            # Set WebSocket session in trace context for streaming support
+            # Set WebSocket session in context and agent for streaming support
             try:
-                from myagent.trace import set_ws_session_context
+                from .context import set_ws_session_context
 
                 set_ws_session_context(self)
-                logger.info(f"Set WebSocket session in trace context for streaming: session_id={self.session_id}")
+                self.agent.ws_session = self
+                logger.info(f"Set WebSocket session for agent: session_id={self.session_id}")
             except Exception as e:
-                logger.error(f"Could not set WebSocket session in trace context: {e}")
+                logger.error(f"Could not set WebSocket session: {e}")
 
             # 执行 Agent
             if hasattr(self.agent, "arun"):
@@ -163,16 +164,15 @@ class AgentSession:
             logger.error(f"Agent execution error: {e}")
             raise
         finally:
-            # Clean up WebSocket session from trace context
+            # Clean up WebSocket session from context and agent
             try:
-                from myagent.trace import clear_ws_session_context
+                from .context import clear_ws_session_context
 
                 clear_ws_session_context()
-                logger.debug("Cleaned up WebSocket session from trace context")
+                self.agent.ws_session = None
+                logger.debug("Cleaned up WebSocket session")
             except Exception as e:
-                logger.debug(
-                    f"Could not clean up WebSocket session from trace context: {e}"
-                )
+                logger.debug(f"Could not clean up WebSocket session: {e}")
 
     def _wrap_tool_calls(self):
         """Wrap tool calls to provide real-time feedback"""

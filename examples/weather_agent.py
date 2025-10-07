@@ -124,7 +124,7 @@ agent = create_react_agent(
 如果用户询问天气,使用 get_weather 工具。
 如果用户询问城市信息,使用 get_city_info 工具。
 回答时要友好、准确,并提供有用的建议。""",
-    next_step_prompt="根据用户的问题,选择合适的工具来获取信息,然后给出友好的回答。",
+    next_step_prompt="根据用户的问题,选择合适的工具来获取信息,然后给出友好的回答。如果你已经有足够的信息,调用 Terminate 工具来结束对话。",
     max_steps=5,
     enable_tracing=True,
 )

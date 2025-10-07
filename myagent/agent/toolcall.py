@@ -12,13 +12,6 @@ from ..schema import TOOL_CHOICE_TYPE, AgentState, Message, ToolCall, ToolChoice
 from ..tool import Terminate, ToolCollection
 from .react import ReActAgent
 
-try:
-    from ..trace import get_ws_session_context
-
-    TRACE_AVAILABLE = True
-except ImportError:
-    TRACE_AVAILABLE = False
-
 TOOL_CALL_REQUIRED = "Tool calls required but none provided"
 
 
@@ -311,15 +304,7 @@ class ToolCallAgent(ReActAgent):
             clean_messages = self._get_clean_messages_for_summary()
 
             # Check if we have WebSocket streaming capabilities
-            ws_session = None
-
-            # Try to get WebSocket session from trace manager
-            if TRACE_AVAILABLE:
-                try:
-                    from myagent.trace import get_ws_session_context
-                    ws_session = get_ws_session_context()
-                except Exception as e:
-                    logger.debug(f"Could not get WebSocket session: {e}")
+            ws_session = getattr(self, 'ws_session', None)
 
             # Use streaming if WebSocket session is available
             if ws_session:
@@ -613,17 +598,8 @@ class ToolCallAgent(ReActAgent):
         if not content:
             return
 
-        # Check if we have WebSocket streaming capabilities
-        ws_session = None
-
-        # Try to get WebSocket session from trace manager
-        if TRACE_AVAILABLE:
-            try:
-                from myagent.trace import get_ws_session_context
-                ws_session = get_ws_session_context()
-                logger.debug(f"WebSocket session in think(): {ws_session is not None}")
-            except Exception as e:
-                logger.debug(f"Could not get WebSocket session: {e}")
+        # Get WebSocket session from agent
+        ws_session = getattr(self, 'ws_session', None)
 
         if ws_session:
             try:
@@ -647,16 +623,8 @@ class ToolCallAgent(ReActAgent):
         if os.getenv("SEND_LLM_MESSAGE", "").lower() not in ("true", "1", "yes", "on"):
             return
 
-        # Check if we have WebSocket streaming capabilities
-        ws_session = None
-
-        # Try to get WebSocket session from trace manager
-        if TRACE_AVAILABLE:
-            try:
-                from myagent.trace import get_ws_session_context
-                ws_session = get_ws_session_context()
-            except Exception as e:
-                logger.debug(f"Could not get WebSocket session for LLM_MESSAGE: {e}")
+        # Get WebSocket session from agent
+        ws_session = getattr(self, 'ws_session', None)
 
         if ws_session:
             try:

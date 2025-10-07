@@ -14,9 +14,6 @@ from .manager import get_trace_manager
 from .manager import run
 from .manager import set_trace_manager
 from .manager import trace
-from .manager import set_ws_session_context
-from .manager import get_ws_session_context
-from .manager import clear_ws_session_context
 from .models import Run
 from .models import RunStatus
 from .models import RunType
@@ -50,7 +47,4 @@ __all__ = [
     "trace_agent_step",
     "trace_run",
     "trace_tool_call",
-    "set_ws_session_context",
-    "get_ws_session_context", 
-    "clear_ws_session_context",
 ]
