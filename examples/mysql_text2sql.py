@@ -20,9 +20,6 @@ from pymysql.cursors import DictCursor
 from myagent import create_react_agent
 from myagent.tool.base_tool import BaseTool
 from myagent.tool.base_tool import ToolResult
-from myagent.trace import TraceExporter
-from myagent.trace import TraceQueryEngine
-from myagent.trace import get_trace_manager
 
 REQUIRED_ENV_VARS = (
     "MYSQL_HOST",
@@ -30,7 +27,6 @@ REQUIRED_ENV_VARS = (
     "MYSQL_PASSWORD",
     "MYSQL_DATABASE",
 )
-
 
 @dataclass
 class MySQLConfig:
@@ -40,7 +36,6 @@ class MySQLConfig:
     database: str
     port: int = 3306
     charset: str = "utf8mb4"
-
 
 def _load_mysql_config() -> MySQLConfig:
     missing = [var for var in REQUIRED_ENV_VARS if not os.environ.get(var)]
@@ -60,7 +55,6 @@ def _load_mysql_config() -> MySQLConfig:
         charset=os.environ.get("MYSQL_CHARSET", "utf8mb4"),
     )
 
-
 def _connect(config: MySQLConfig) -> pymysql.connections.Connection:
     return pymysql.connect(
         host=config.host,
@@ -72,7 +66,6 @@ def _connect(config: MySQLConfig) -> pymysql.connections.Connection:
         autocommit=True,
         cursorclass=DictCursor,
     )
-
 
 def _ensure_read_only(sql: str) -> str | None:
     normalized = sql.strip().lower()
@@ -87,7 +80,6 @@ def _ensure_read_only(sql: str) -> str | None:
     if match:
         return f"Disallowed keyword detected: '{match.group(1)}'. Only read-only queries are permitted."
     return None
-
 
 def _format_table(
     headers: Sequence[str],
@@ -123,7 +115,6 @@ def _format_table(
 
     footer = f"\n({' | '.join(footer_parts)})" if footer_parts else ""
     return "\n".join([header_line, separator_line, *row_lines]) + footer
-
 
 class MySQLSchemaTool(BaseTool):
     name: str = "mysql_schema"
@@ -230,7 +221,6 @@ class MySQLSchemaTool(BaseTool):
             print(f"Exception in execute: {error_detail}")
             return ToolResult(error=error_detail)
 
-
 class MySQLQueryTool(BaseTool):
     name: str = "mysql_query"
     description: str = "Execute a read-only SQL query against the MySQL database and return the results."
@@ -314,7 +304,6 @@ class MySQLQueryTool(BaseTool):
             system=f"Query executed successfully: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}",
         )
 
-
 class MySQLValidateSQLTool(BaseTool):
     name: str = "mysql_validate_sql"
     description: str = "Validate the final SQL without fetching full results. Records the last approved SQL."
@@ -376,7 +365,6 @@ class MySQLValidateSQLTool(BaseTool):
             system=f"SQL validation completed for: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}",
         )
 
-
 schema_tool = MySQLSchemaTool()
 query_tool = MySQLQueryTool()
 validate_tool = MySQLValidateSQLTool()
@@ -407,7 +395,6 @@ agent = create_react_agent(
     enable_tracing=False,
 )
 
-
 async def main() -> None:
     parser = argparse.ArgumentParser(
         description="MySQL Text-to-SQL agent example with trace recording"
@@ -418,9 +405,7 @@ async def main() -> None:
         default="显示用户表的10条用户数据",
         help="Natural-language question to answer with SQL.",
     )
-    args = parser.parse_args()
-    print("🔍 Starting MySQL Text-to-SQL with trace recording...")
-    print(f"Question: {args.question}")
+    args = parser.parse_args()    print(f"Question: {args.question}")
 
     result = await agent.run(args.question)
     print("\n✅ Agent execution completed:")
@@ -441,47 +426,6 @@ async def main() -> None:
 
     print("\n📊 Final response:")
     print(agent.final_response)
-
-    # Save trace data to JSON
-    await save_traces_to_json("mysql_text2sql_traces.json", args.question)
-
-
-async def save_traces_to_json(filename: str, question: str) -> None:
-    """Save all traces to a JSON file."""
-    print(f"\n💾 Saving trace data to {filename}...")
-
-    trace_manager = get_trace_manager()
-    query_engine = TraceQueryEngine(trace_manager.storage)
-    exporter = TraceExporter(query_engine)
-
-    # Export traces to JSON
-    json_data = await exporter.export_traces_to_json()
-
-    if not os.path.isdir("./workdir/traces"):
-        os.makedirs("./workdir/traces")
-
-    # Save to file
-    with open(f"./workdir/traces/{filename}", "w", encoding="utf-8") as f:
-        f.write(json_data)
-
-    # Get statistics
-    stats = await query_engine.get_trace_statistics()
-
-    print(f"✅ Saved trace data to {filename}")
-    print("📊 Trace Statistics:")
-    print(f"  - Total traces: {stats['total_traces']}")
-    print(f"  - Average duration: {stats['avg_duration_ms']:.2f}ms")
-    print(f"  - Error rate: {stats['error_rate']:.2%}")
-
-    # Also save a summary report
-    summary_filename = filename.replace(".json", "_summary.md")
-    summary = await exporter.export_trace_summary()
-    with open(f"./workdir/traces/{summary_filename}", "w", encoding="utf-8") as f:
-        f.write("# MySQL Text-to-SQL Trace Summary\n\n")
-        f.write(f"**Question:** {question}\n\n")
-        f.write(summary)
-    print(f"📋 Summary report saved to ./workdir/traces/{summary_filename}")
-
 
 if __name__ == "__main__":
     asyncio.run(main())

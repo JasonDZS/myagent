@@ -32,7 +32,6 @@ from myagent.tool.academic_search import create_academic_tools
 from myagent.tool.data_analysis import create_data_analysis_tools
 from myagent.tool.web_content import create_web_content_tools
 from myagent.tool.code_execution import create_code_execution_tools
-from myagent.trace import get_trace_manager, TraceExporter, TraceQueryEngine
 
 
 async def create_research_agent():

@@ -3,7 +3,6 @@ MyAgent - Lightweight toolkit for building tool-aware LLM agents
 
 A comprehensive framework for building LLM agents with:
 - ReAct-style reasoning and action patterns
-- Comprehensive tracing and debugging capabilities
 - WebSocket server support for real-time interactions
 - Rich tool ecosystem with built-in safety features
 """
@@ -25,10 +24,6 @@ from .tool import BaseTool
 from .tool import Terminate
 from .tool import ToolCollection
 from .tool.base_tool import ToolResult
-from .trace import TraceManager
-from .trace import trace_agent_step
-from .trace import trace_run
-from .trace import trace_tool_call
 from .type import *
 
 # WebSocket Management System
@@ -60,11 +55,6 @@ __all__ = [
     "BaseTool",
     "Terminate",
     "ToolCollection",
-    # Tracing system
-    "TraceManager",
-    "trace_agent_step",
-    "trace_run",
-    "trace_tool_call",
     # Management system
     "AgentManager",
     "ServiceRegistry",

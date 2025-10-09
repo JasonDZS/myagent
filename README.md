@@ -1,12 +1,11 @@
 # MyAgent
 
-MyAgent is a lightweight toolkit for building tool-aware LLM agents with comprehensive tracing capabilities. It provides a ReAct-style agent framework with WebSocket server support and detailed execution tracing.
+MyAgent is a lightweight toolkit for building tool-aware LLM agents. It provides a ReAct-style agent framework with WebSocket server support for real-time communication.
 
 ## Features
 
 - **ReAct Agent Framework**: Implements reasoning and acting patterns for intelligent decision-making
 - **Tool System**: Extensible tool architecture with async execution support
-- **Comprehensive Tracing**: Detailed execution tracing with SQLite persistence and web-based viewer
 - **WebSocket Server**: Real-time agent communication with session management
 - **Built-in Tools**: Web search, SQL operations, and user confirmation workflows
 - **CLI Interface**: Easy deployment and management via command-line tools
@@ -64,7 +63,6 @@ uv run python -m myagent.cli.server server examples/ws_weather_agent.py --port 8
 
 - **Agent Framework**: Base agents, ReAct implementation, and factory functions
 - **Tool System**: Extensible tool interface with built-in implementations
-- **Tracing System**: Flat architecture with Think and Tool records
 - **WebSocket Server**: Real-time communication with structured events
 - **CLI Tools**: Server deployment and management utilities
 
@@ -73,20 +71,9 @@ uv run python -m myagent.cli.server server examples/ws_weather_agent.py --port 8
 The framework includes several example tools:
 
 - **DuckDuckGoSearchTool**: Web search using DuckDuckGo API
-- **WeatherTool**: Weather information retrieval  
+- **WeatherTool**: Weather information retrieval
 - **MySQLTool**: Database operations with text-to-SQL conversion
 - **TerminateTool**: Standard agent termination
-
-### Tracing and Analysis
-
-MyAgent provides comprehensive execution tracing:
-
-```bash
-# Start trace viewer server
-python trace_server.py
-
-# View traces in browser at http://localhost:8000
-```
 
 ## Development
 

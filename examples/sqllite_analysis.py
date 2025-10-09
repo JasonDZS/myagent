@@ -25,9 +25,6 @@ from pymysql.cursors import DictCursor
 from myagent import create_react_agent
 from myagent.tool.base_tool import BaseTool
 from myagent.tool.base_tool import ToolResult
-from myagent.trace import TraceExporter
-from myagent.trace import TraceQueryEngine
-from myagent.trace import get_trace_manager
 
 class DatabaseType(str, Enum):
     MYSQL = "mysql"
@@ -47,7 +44,6 @@ REQUIRED_SQLITE_ENV_VARS = (
 class ToolResultExpanded(ToolResult):
     data: Any | None = None  # Additional structured data, e.g. for visualizations
 
-
 @dataclass
 class DatabaseConfig:
     db_type: DatabaseType
@@ -58,7 +54,6 @@ class DatabaseConfig:
     password: str | None = None
     port: int = 3306
     charset: str = "utf8mb4"
-
 
 def _load_database_config() -> DatabaseConfig:
     db_type = DatabaseType(os.environ.get("DB_TYPE", "sqlite").lower())
@@ -95,7 +90,6 @@ def _load_database_config() -> DatabaseConfig:
     else:
         raise RuntimeError(f"Unsupported database type: {db_type}")
 
-
 def _connect(config: DatabaseConfig) -> Union[pymysql.connections.Connection, sqlite3.Connection]:
     if config.db_type == DatabaseType.MYSQL:
         return pymysql.connect(
@@ -116,7 +110,6 @@ def _connect(config: DatabaseConfig) -> Union[pymysql.connections.Connection, sq
     else:
         raise RuntimeError(f"Unsupported database type: {config.db_type}")
 
-
 def _ensure_read_only(sql: str) -> str | None:
     normalized = sql.strip().lower()
     disallowed_pattern = re.compile(
@@ -130,7 +123,6 @@ def _ensure_read_only(sql: str) -> str | None:
     if match:
         return f"Disallowed keyword detected: '{match.group(1)}'. Only read-only queries are permitted."
     return None
-
 
 def _format_table(
     headers: Sequence[str],
@@ -166,7 +158,6 @@ def _format_table(
 
     footer = f"\n({' | '.join(footer_parts)})" if footer_parts else ""
     return "\n".join([header_line, separator_line, *row_lines]) + footer
-
 
 class DatabaseSchemaTool(BaseTool):
     name: str = "db_schema"
@@ -298,7 +289,6 @@ class DatabaseSchemaTool(BaseTool):
             print(f"Exception in execute: {error_detail}")
             return ToolResult(error=error_detail)
 
-
 class DatabaseQueryTool(BaseTool):
     name: str = "db_query"
     description: str = "Execute a read-only SQL query against the database (MySQL or SQLite) and return the results."
@@ -399,7 +389,6 @@ class DatabaseQueryTool(BaseTool):
             output=result,
             system=f"Query executed successfully: {stripped_sql[:100]}{'...' if len(stripped_sql) > 100 else ''}",
         )
-
 
 class DataVisualTool(BaseTool):
     name: str = "data_visual"
@@ -562,7 +551,6 @@ class DataVisualTool(BaseTool):
         except Exception as e:
             return ToolResultExpanded(error=f"Visualization failed: {e}")
 
-
 schema_tool = DatabaseSchemaTool()
 query_tool = DatabaseQueryTool()
 visual_tool = DataVisualTool()
@@ -594,7 +582,6 @@ agent = create_react_agent(
     enable_tracing=False,
 )
 
-
 async def main() -> None:
     parser = argparse.ArgumentParser(
         description="Database Text-to-SQL agent example with trace recording (supports MySQL and SQLite)"
@@ -607,9 +594,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
     
-    config = _load_database_config()
-    print(f"🔍 Starting {config.db_type.upper()} Text-to-SQL with trace recording...")
-    print(f"Question: {args.question}")
+    config = _load_database_config()    print(f"Question: {args.question}")
 
     result = await agent.run(args.question)
     print("\n✅ Agent execution completed:")
@@ -624,48 +609,6 @@ async def main() -> None:
 
     print("\n📊 Final response:")
     print(agent.final_response)
-
-    # Save trace data to JSON
-    await save_traces_to_json(f"{config.db_type}_text2sql_traces.json", args.question)
-
-
-async def save_traces_to_json(filename: str, question: str) -> None:
-    """Save all traces to a JSON file."""
-    print(f"\n💾 Saving trace data to {filename}...")
-
-    trace_manager = get_trace_manager()
-    query_engine = TraceQueryEngine(trace_manager.storage)
-    exporter = TraceExporter(query_engine)
-
-    # Export traces to JSON
-    json_data = await exporter.export_traces_to_json()
-
-    if not os.path.isdir("./workdir/traces"):
-        os.makedirs("./workdir/traces")
-
-    # Save to file
-    with open(f"./workdir/traces/{filename}", "w", encoding="utf-8") as f:
-        f.write(json_data)
-
-    # Get statistics
-    stats = await query_engine.get_trace_statistics()
-
-    print(f"✅ Saved trace data to {filename}")
-    print("📊 Trace Statistics:")
-    print(f"  - Total traces: {stats['total_traces']}")
-    print(f"  - Average duration: {stats['avg_duration_ms']:.2f}ms")
-    print(f"  - Error rate: {stats['error_rate']:.2%}")
-
-    # Also save a summary report
-    summary_filename = filename.replace(".json", "_summary.md")
-    summary = await exporter.export_trace_summary()
-    config = _load_database_config()
-    with open(f"./workdir/traces/{summary_filename}", "w", encoding="utf-8") as f:
-        f.write(f"# {config.db_type.upper()} Text-to-SQL Trace Summary\n\n")
-        f.write(f"**Question:** {question}\n\n")
-        f.write(summary)
-    print(f"📋 Summary report saved to ./workdir/traces/{summary_filename}")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
