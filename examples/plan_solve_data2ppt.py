@@ -313,7 +313,8 @@ class Data2PPTPlanAgent(PlanAgent):
                 "1. Review the question and inspect the database if needed.\n"
                 "2. Draft slide-level tasks and refine them.\n"
                 "3. Call submit_slide_plan with all tasks once the plan is solid.\n"
-                "4. Provide a short recap confirming the slide plan."
+                "4. Provide a short recap confirming the slide plan.\n"
+                "5. When finished, use the terminate tool."
             ),
             max_steps=25,
         )
