@@ -411,9 +411,17 @@ class AgentSession:
 
     async def _send_event(self, event: dict[str, Any]) -> None:
         """Send event to client"""
+        if is_websocket_closed(self.websocket):
+            logger.debug(
+                "WebSocket already closed for session %s, skipping event %s",
+                self.session_id,
+                event.get("event", "unknown"),
+            )
+            return
+
         success = await send_websocket_message(self.websocket, event)
         if not success:
-            logger.error(
+            logger.warning(
                 f"Failed to send event to session {self.session_id}: {event.get('event', 'unknown')}"
             )
 

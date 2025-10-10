@@ -10,6 +10,8 @@ from .plan_solver import (
     SolverAgent,
     SolverRunResult,
     create_plan_solver,
+    PlanSolverSessionAgent,
+    create_plan_solver_session_agent,
 )
 from .react import ReActAgent
 from .toolcall import ToolCallAgent
@@ -27,5 +29,7 @@ __all__ = [
     "PlanSolveResult",
     "PlanSolverPipeline",
     "create_plan_solver",
+    "PlanSolverSessionAgent",
+    "create_plan_solver_session_agent",
     "create_deep_agent",
 ]

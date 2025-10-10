@@ -303,6 +303,7 @@ class Data2PPTPlanAgent(PlanAgent):
                 "- When the plan is ready, call submit_slide_plan ONCE with all tasks.\n\n"
                 "## Task structure requirements\n"
                 "- Use sequential slide ids starting from 1.\n"
+                "- Always dedicate slide id 1 to the presentation cover page (title plus optional subtitle/presenter/date).\n"
                 "- Provide a concise title and a clear objective for each slide.\n"
                 "- Add optional insights, SQL suggestions, or chart hints when they help the solvers.\n"
                 "- Do not attempt to generate slides yourself – only plan the work.\n"

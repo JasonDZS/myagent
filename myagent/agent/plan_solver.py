@@ -11,13 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, Awaitable, Callable, Sequence
 
+from pydantic import Field
+
+from ..logger import logger
+from ..schema import AgentState
+from ..ws import get_ws_session_context, send_websocket_message
+from ..ws.events import create_event
 from .base import BaseAgent
 
 AggregateFn = Callable[["PlanContext", Sequence["SolverRunResult"]], Any]
 AsyncAggregateFn = Callable[["PlanContext", Sequence["SolverRunResult"]], Awaitable[Any]]
+ProgressCallback = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 
 @dataclass(frozen=True)
@@ -138,15 +145,19 @@ class PlanSolverPipeline:
         solver: SolverAgent,
         aggregator: AggregateFn | AsyncAggregateFn | None = None,
         concurrency: int | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         self.name = name
         self.planner = planner
         self.solver = solver
         self.aggregator = aggregator
         self.concurrency = concurrency
+        self.progress_callback = progress_callback
 
     async def run(self, question: str) -> PlanSolveResult:
         """Execute the plan → solve pipeline for the provided question."""
+        await self._notify("plan.start", {"question": question})
+
         plan_agent = self.planner.build_agent()
         plan_request = self.planner.build_request(question)
         plan_output = await plan_agent.run(plan_request)
@@ -166,8 +177,22 @@ class PlanSolverPipeline:
             raw_plan_output=plan_output,
         )
 
+        await self._notify(
+            "plan.completed",
+            {"tasks": tasks, "plan_summary": plan_summary},
+        )
+
         solver_results = await self._run_solvers(tasks, context)
         aggregate_output = await self._run_aggregator(context, solver_results)
+
+        await self._notify(
+            "pipeline.completed",
+            {
+                "context": context,
+                "solver_results": solver_results,
+                "aggregate_output": aggregate_output,
+            },
+        )
 
         return PlanSolveResult(
             context=context,
@@ -183,6 +208,8 @@ class PlanSolverPipeline:
         )
 
         async def _execute(task: Any) -> SolverRunResult:
+            await self._notify("solver.start", {"task": task})
+
             async def _run() -> SolverRunResult:
                 agent = self.solver.build_agent(task, context=context)
                 request = self.solver.build_request(task, context=context)
@@ -193,13 +220,23 @@ class PlanSolverPipeline:
                 summary = self.solver.extract_summary(
                     agent, solver_output, task, context=context
                 )
-                return SolverRunResult(
+                result = SolverRunResult(
                     task=task,
                     output=output,
                     summary=summary,
                     raw_output=solver_output,
                     agent_name=getattr(agent, "name", self.solver.name),
                 )
+                sanitized_result = {
+                    "output": result.output,
+                    "summary": result.summary,
+                    "agent_name": result.agent_name,
+                }
+                await self._notify(
+                    "solver.completed",
+                    {"task": task, "result": sanitized_result},
+                )
+                return result
 
             if semaphore:
                 async with semaphore:
@@ -214,10 +251,33 @@ class PlanSolverPipeline:
     ) -> Any:
         if not self.aggregator:
             return None
+        await self._notify(
+            "aggregate.start", {"context": context, "solver_results": results}
+        )
         aggregate = self.aggregator(context, results)
         if inspect.isawaitable(aggregate):
-            return await aggregate  # type: ignore[return-value]
+            aggregate = await aggregate  # type: ignore[assignment]
+        await self._notify(
+            "aggregate.completed",
+            {"context": context, "solver_results": results, "output": aggregate},
+        )
         return aggregate
+
+    def set_progress_callback(self, callback: ProgressCallback | None) -> None:
+        """Register a callback for pipeline progress events."""
+        self.progress_callback = callback
+
+    async def _notify(self, event: str, payload: dict[str, Any]) -> None:
+        if not self.progress_callback:
+            return
+        try:
+            outcome = self.progress_callback(event, payload)
+            if inspect.isawaitable(outcome):
+                await outcome  # type: ignore[func-returns-value]
+        except Exception as exc:  # pragma: no cover - safeguard
+            logger.debug(
+                "PlanSolverPipeline progress callback failed (%s): %s", event, exc
+            )
 
 
 def create_plan_solver(
@@ -227,6 +287,7 @@ def create_plan_solver(
     solver: SolverAgent,
     aggregator: AggregateFn | AsyncAggregateFn | None = None,
     concurrency: int | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> PlanSolverPipeline:
     """Factory helper for constructing plan→solve pipelines.
 
@@ -236,6 +297,7 @@ def create_plan_solver(
         solver: Concrete SolverAgent implementation used for each task.
         aggregator: Optional function combining all solver results.
         concurrency: Max concurrent solver executions (None = unlimited).
+        progress_callback: Optional coroutine/callback for pipeline progress events.
 
     Returns:
         Configured PlanSolverPipeline ready to execute via `run()`.
@@ -255,4 +317,113 @@ def create_plan_solver(
         solver=solver,
         aggregator=aggregator,
         concurrency=concurrency,
+        progress_callback=progress_callback,
+    )
+
+
+class PlanSolverSessionAgent(BaseAgent):
+    """Wrap PlanSolverPipeline as a WebSocket-aware BaseAgent."""
+
+    pipeline: PlanSolverPipeline
+    event_namespace: str | None = Field(
+        default=None,
+        description="Optional prefix for emitted WebSocket events (e.g., plan.plan.start)",
+    )
+    broadcast_tasks: bool = Field(
+        default=True,
+        description="Whether to include full task payloads in plan.completed events",
+    )
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    async def run(self, question: str | None = None) -> str:
+        if not question:
+            raise ValueError("PlanSolverSessionAgent requires a question to run.")
+
+        self.update_memory("user", question)
+
+        if self.state not in (AgentState.IDLE, AgentState.FINISHED):
+            raise RuntimeError(f"Cannot run agent from state: {self.state}")
+
+        self.state = AgentState.RUNNING
+        self.pipeline.set_progress_callback(self._progress_callback)
+
+        try:
+            result = await self.pipeline.run(question)
+            summary = result.plan_summary or "Plan & Solve pipeline completed."
+            self.final_response = summary
+            return summary
+        finally:
+            self.pipeline.set_progress_callback(None)
+            self.state = AgentState.FINISHED
+
+    async def step(self) -> str:
+        raise NotImplementedError("PlanSolverSessionAgent executes via run().")
+
+    async def _progress_callback(self, event: str, payload: dict[str, Any]) -> None:
+        content = self._make_serializable(payload)
+
+        if not self.broadcast_tasks and event == "plan.completed":
+            content = {k: v for k, v in content.items() if k != "tasks"}
+
+        await self._emit_event(event, content)
+
+    async def _emit_event(self, event: str, content: Any) -> None:
+        session = get_ws_session_context()
+        if not session:
+            return
+
+        if self.event_namespace:
+            event_type = f"{self.event_namespace}.{event}"
+        else:
+            event_type = event
+        session_id = getattr(session, "session_id", None)
+        ws_event = create_event(event_type, session_id=session_id, content=content)
+
+        if hasattr(session, "_send_event"):
+            await session._send_event(ws_event)  # type: ignore[attr-defined]
+        else:
+            await send_websocket_message(session.websocket, ws_event)  # type: ignore[attr-defined]
+
+    def _make_serializable(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if is_dataclass(value):
+            return asdict(value)
+        if isinstance(value, dict):
+            return {k: self._make_serializable(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._make_serializable(v) for v in value]
+        if hasattr(value, "dict"):
+            try:
+                return value.dict()
+            except Exception:  # pragma: no cover - best effort
+                pass
+        if hasattr(value, "__dict__"):
+            return {
+                k: self._make_serializable(v)
+                for k, v in vars(value).items()
+                if not k.startswith("_")
+            }
+        return str(value)
+
+
+def create_plan_solver_session_agent(
+    pipeline: PlanSolverPipeline,
+    *,
+    name: str | None = None,
+    event_namespace: str | None = None,
+    broadcast_tasks: bool = True,
+) -> PlanSolverSessionAgent:
+    """Factory to wrap a PlanSolverPipeline for WebSocket usage."""
+
+    agent_name = name or pipeline.name
+    namespace = event_namespace if event_namespace is not None else None
+
+    return PlanSolverSessionAgent(
+        name=agent_name,
+        pipeline=pipeline,
+        event_namespace=namespace,
+        broadcast_tasks=broadcast_tasks,
     )
