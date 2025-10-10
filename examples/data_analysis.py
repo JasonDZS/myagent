@@ -594,7 +594,8 @@ async def main() -> None:
     )
     args = parser.parse_args()
     
-    config = _load_database_config()    print(f"Question: {args.question}")
+    config = _load_database_config()
+    print(f"Question: {args.question}")
 
     result = await agent.run(args.question)
     print("\n✅ Agent execution completed:")
