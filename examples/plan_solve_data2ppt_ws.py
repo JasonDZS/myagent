@@ -30,7 +30,7 @@ def build_pipeline():
         name="plan_solve_data2ppt",
         planner=Data2PPTPlanAgent(),
         solver=Data2PPTSlideSolver(),
-        concurrency=3,
+        concurrency=5,
         aggregator=compile_presentation,
     )
 
