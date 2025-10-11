@@ -572,6 +572,21 @@ class ToolCallAgent(ReActAgent):
             completion_tokens = self.llm.count_tokens(full_response)
             self.llm.total_completion_tokens += completion_tokens
 
+            self.llm.record_call(
+                call_type="summary_stream",
+                metadata={
+                    "input_tokens": input_tokens,
+                    "output_tokens": completion_tokens,
+                    "stream": True,
+                    "temperature": self.llm.temperature,
+                },
+                extra={
+                    "response_length": len(full_response),
+                    "messages_count": len(formatted_messages),
+                    "origin": "final_summary",
+                },
+            )
+
             logger.info(
                 f"✅ Streaming summary completed: {len(full_response)} characters"
             )

@@ -36,6 +36,7 @@ class PlanContext:
     tasks: Sequence[Any]
     plan_summary: str | None
     raw_plan_output: str | None
+    plan_statistics: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class SolverRunResult:
     summary: str | None
     raw_output: str | None
     agent_name: str
+    statistics: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,7 @@ class PlanSolveResult:
     context: PlanContext
     solver_results: Sequence[SolverRunResult]
     aggregate_output: Any = None
+    statistics: dict[str, Any] | None = None
 
     @property
     def tasks(self) -> Sequence[Any]:
@@ -66,8 +69,16 @@ class PlanSolveResult:
         return self.context.plan_summary
 
     @property
+    def plan_statistics(self) -> dict[str, Any] | None:
+        return self.context.plan_statistics
+
+    @property
     def question(self) -> str:
         return self.context.question
+
+    @property
+    def pipeline_statistics(self) -> dict[str, Any] | None:
+        return self.statistics
 
 
 class PlanAgent:
@@ -169,21 +180,39 @@ class PlanSolverPipeline:
             )
 
         plan_summary = self.planner.extract_summary(plan_agent, plan_output)
+        plan_statistics = None
+        if hasattr(plan_agent, "get_statistics"):
+            try:
+                plan_statistics = plan_agent.get_statistics()
+            except Exception as exc:  # pragma: no cover - safeguard
+                logger.debug(
+                    "Failed to collect planner statistics (%s): %s",
+                    getattr(plan_agent, "name", self.planner.name),
+                    exc,
+                )
         context = PlanContext(
             name=self.name,
             question=question,
             tasks=tasks,
             plan_summary=plan_summary,
             raw_plan_output=plan_output,
+            plan_statistics=plan_statistics,
         )
 
         await self._notify(
             "plan.completed",
-            {"tasks": tasks, "plan_summary": plan_summary},
+            {
+                "tasks": tasks,
+                "plan_summary": plan_summary,
+                "statistics": plan_statistics,
+            },
         )
 
         solver_results = await self._run_solvers(tasks, context)
         aggregate_output = await self._run_aggregator(context, solver_results)
+        pipeline_statistics = self._build_pipeline_statistics(
+            plan_statistics, solver_results
+        )
 
         await self._notify(
             "pipeline.completed",
@@ -191,6 +220,7 @@ class PlanSolverPipeline:
                 "context": context,
                 "solver_results": solver_results,
                 "aggregate_output": aggregate_output,
+                "statistics": pipeline_statistics,
             },
         )
 
@@ -198,6 +228,7 @@ class PlanSolverPipeline:
             context=context,
             solver_results=solver_results,
             aggregate_output=aggregate_output,
+            statistics=pipeline_statistics,
         )
 
     async def _run_solvers(
@@ -220,18 +251,31 @@ class PlanSolverPipeline:
                 summary = self.solver.extract_summary(
                     agent, solver_output, task, context=context
                 )
+                statistics = None
+                if hasattr(agent, "get_statistics"):
+                    try:
+                        statistics = agent.get_statistics()
+                    except Exception as exc:  # pragma: no cover - safeguard
+                        logger.debug(
+                            "Failed to collect solver statistics (%s): %s",
+                            getattr(agent, "name", "unknown"),
+                            exc,
+                        )
                 result = SolverRunResult(
                     task=task,
                     output=output,
                     summary=summary,
                     raw_output=solver_output,
                     agent_name=getattr(agent, "name", self.solver.name),
+                    statistics=statistics,
                 )
                 sanitized_result = {
                     "output": result.output,
                     "summary": result.summary,
                     "agent_name": result.agent_name,
                 }
+                if statistics is not None:
+                    sanitized_result["statistics"] = statistics
                 await self._notify(
                     "solver.completed",
                     {"task": task, "result": sanitized_result},
@@ -262,6 +306,82 @@ class PlanSolverPipeline:
             {"context": context, "solver_results": results, "output": aggregate},
         )
         return aggregate
+
+    def _build_pipeline_statistics(
+        self,
+        plan_statistics: dict[str, Any] | None,
+        solver_results: Sequence[SolverRunResult],
+    ) -> dict[str, Any] | None:
+        has_plan = bool(plan_statistics)
+        solver_stats = [res for res in solver_results if res.statistics]
+        if not has_plan and not solver_stats:
+            return None
+
+        total_calls = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        combined_calls: list[dict[str, Any]] = []
+
+        def _accumulate(stat: dict[str, Any] | None, origin: str, agent_name: str) -> None:
+            nonlocal total_calls, total_input_tokens, total_output_tokens, combined_calls
+            if not stat:
+                return
+            total_calls += int(stat.get("total_calls", 0) or 0)
+
+            def _resolve_total(key: str) -> int:
+                value = stat.get(key)
+                if isinstance(value, (int, float)):
+                    return int(value)
+                running = stat.get("running_totals", {})
+                if isinstance(running, dict):
+                    running_val = running.get("input_tokens" if key == "total_input_tokens" else "output_tokens")
+                    if isinstance(running_val, (int, float)):
+                        return int(running_val)
+                return 0
+
+            total_input_tokens += _resolve_total("total_input_tokens")
+            total_output_tokens += _resolve_total("total_output_tokens")
+
+            calls = stat.get("calls")
+            if isinstance(calls, list):
+                for call in calls:
+                    if isinstance(call, dict):
+                        call_entry = call.copy()
+                        call_entry.setdefault("origin", origin)
+                        call_entry.setdefault("agent", agent_name)
+                        combined_calls.append(call_entry)
+
+        if plan_statistics:
+            _accumulate(plan_statistics, "plan", plan_statistics.get("agent", self.planner.name))
+
+        solver_statistics_entries: list[dict[str, Any]] = []
+        for result in solver_stats:
+            stats = result.statistics
+            agent_name = result.agent_name
+            _accumulate(stats, "solver", agent_name)
+            solver_statistics_entries.append(
+                {
+                    "task": result.task,
+                    "agent_name": agent_name,
+                    "statistics": stats,
+                }
+            )
+
+        totals = {
+            "total_calls": total_calls,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "total_tokens": total_input_tokens + total_output_tokens,
+        }
+        payload = {
+            "plan": plan_statistics,
+            "solvers": solver_statistics_entries,
+            "totals": totals,
+        }
+        if combined_calls:
+            payload["calls"] = combined_calls
+
+        return payload
 
     def set_progress_callback(self, callback: ProgressCallback | None) -> None:
         """Register a callback for pipeline progress events."""
@@ -415,8 +535,19 @@ def create_plan_solver_session_agent(
     name: str | None = None,
     event_namespace: str | None = None,
     broadcast_tasks: bool = True,
+    max_retry_attempts: int = 0,
+    retry_delay_seconds: float = 0.0,
 ) -> PlanSolverSessionAgent:
-    """Factory to wrap a PlanSolverPipeline for WebSocket usage."""
+    """Factory to wrap a PlanSolverPipeline for WebSocket usage.
+
+    Args:
+        pipeline: The configured plan→solve pipeline to wrap.
+        name: Optional agent name override.
+        event_namespace: Prefix for emitted WebSocket events.
+        broadcast_tasks: Whether to include full task payloads in events.
+        max_retry_attempts: Number of retries allowed when execution fails.
+        retry_delay_seconds: Delay between retries emitted by the session layer.
+    """
 
     agent_name = name or pipeline.name
     namespace = event_namespace if event_namespace is not None else None
@@ -426,4 +557,6 @@ def create_plan_solver_session_agent(
         pipeline=pipeline,
         event_namespace=namespace,
         broadcast_tasks=broadcast_tasks,
+        max_retry_attempts=max_retry_attempts,
+        retry_delay_seconds=retry_delay_seconds,
     )

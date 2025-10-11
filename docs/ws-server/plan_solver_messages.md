@@ -38,12 +38,12 @@
 | 事件 | 说明 | content 结构 |
 | --- | --- | --- |
 | `plan.start` | 计划阶段开始 | `{ "question": "<原始问题>" }` |
-| `plan.completed` | 计划阶段结束 | `{ "tasks": [...], "plan_summary": "<文本>" }` |
+| `plan.completed` | 计划阶段结束 | `{ "tasks": [...], "plan_summary": "<文本>", "statistics": { ... } }` |
 | `solver.start` | 单个求解器开始处理某任务 | `{ "task": { ... } }` |
-| `solver.completed` | 单个求解器完成 | `{ "task": { ... }, "result": { "output": ..., "summary": ..., "agent_name": ... } }` |
+| `solver.completed` | 单个求解器完成 | `{ "task": { ... }, "result": { "output": ..., "summary": ..., "agent_name": ..., "statistics": { ... } } }` |
 | `aggregate.start` | 聚合阶段开始 | `{ "context": { ... }, "solver_results": [...] }` |
 | `aggregate.completed` | 聚合阶段完成 | `{ "context": { ... }, "solver_results": [...], "output": ... }` |
-| `pipeline.completed` | 全流程收尾（全部求解与聚合完成） | `{ "context": { ... }, "solver_results": [...], "aggregate_output": ... }` |
+| `pipeline.completed` | 全流程收尾（全部求解与聚合完成） | `{ "context": { ... }, "solver_results": [...], "aggregate_output": ..., "statistics": { ... } }` |
 | `agent.final_answer` | Agent 最终回应 | `"<最终总结文本>"` |
 | `agent.session_end` | 会话结束（可能因取消或正常结束产生） | `"Session closed"` |
 
@@ -68,7 +68,7 @@
 
 ### 3.2 求解结果 (`result`)
 
-`solver.completed` 的 `result` 字段仅保留核心信息：
+`solver.completed` 的 `result` 字段携带求解结果与成本统计：
 ```json
 {
   "output": {
@@ -87,12 +87,124 @@
     ]
   },
   "summary": "Slide 1: 销售概览 draft ready.",
-  "agent_name": "ppt_slide_solver_1"
+  "agent_name": "ppt_slide_solver_1",
+  "statistics": {
+    "agent": "ppt_slide_solver_1",
+    "model": "gpt-4o",
+    "total_calls": 2,
+    "total_input_tokens": 684,
+    "total_output_tokens": 412,
+    "total_tokens": 1096,
+    "running_totals": {
+      "input_tokens": 684,
+      "output_tokens": 412,
+      "max_input_tokens": null
+    },
+    "calls": [
+      {
+        "id": 1,
+        "call_type": "ask",
+        "timestamp": "2025-05-20T03:50:11.532412",
+        "input_tokens": 352,
+        "output_tokens": 210,
+        "total_tokens": 562,
+        "stream": false,
+        "response_length": 512,
+        "messages_count": 6
+      },
+      {
+        "id": 2,
+        "call_type": "ask",
+        "timestamp": "2025-05-20T03:50:29.918004",
+        "input_tokens": 332,
+        "output_tokens": 202,
+        "total_tokens": 534,
+        "stream": true,
+        "response_length": 498,
+        "messages_count": 7
+      }
+    ]
+  }
 }
 ```
-`output` 通常遵循 `GeneratePPTTool` 的幻灯片格式（`id`、`title`、`text` 和可选 `charts` 等）。
+`output` 通常遵循 `GeneratePPTTool` 的幻灯片格式（`id`、`title`、`text` 和可选 `charts` 等）。`statistics` 源自求解 agent 的 `get_statistics()`，用于实时展示 LLM 调用次数及 token 消耗；若求解器未实现该接口则字段缺失。
 
-## 4. 聚合阶段事件
+### 3.3 规划统计 (`statistics` on `plan.completed`)
+
+`plan.completed` 会包含同样格式的 `statistics` 字段，记录规划阶段使用的模型、请求次数以及累计 token。示例：
+
+```json
+{
+  "tasks": [...],
+  "plan_summary": "生成 2 页销售概览幻灯片",
+  "statistics": {
+    "agent": "planner",
+    "model": "gpt-4o-mini",
+    "total_calls": 1,
+    "total_input_tokens": 420,
+    "total_output_tokens": 188,
+    "total_tokens": 608,
+    "running_totals": {
+      "input_tokens": 420,
+      "output_tokens": 188,
+      "max_input_tokens": null
+    }
+  }
+}
+```
+
+若服务器配置 `broadcast_tasks=False`，`plan.completed` 仍会保留 `plan_summary` 与 `statistics`，便于客户端展示成本信息。
+
+## 4. 全流程统计 (`statistics` on `pipeline.completed`)
+
+`pipeline.completed` 的 `statistics` 字段汇总规划与求解阶段的成本信息，结构如下：
+
+```json
+{
+  "plan": { ... 与 plan.completed 中一致 ... },
+  "solvers": [
+    {
+      "task": { ... },
+      "agent_name": "ppt_slide_solver_1",
+      "statistics": { ... 与 solver.completed 中一致 ... }
+    }
+  ],
+  "totals": {
+    "total_calls": 5,
+    "total_input_tokens": 1580,
+    "total_output_tokens": 920,
+    "total_tokens": 2500
+  },
+  "calls": [
+    {
+      "id": 1,
+      "origin": "plan",
+      "agent": "planner",
+      "call_type": "ask",
+      "input_tokens": 420,
+      "output_tokens": 188,
+      "total_tokens": 608,
+      "stream": false,
+      "timestamp": "2025-05-20T03:50:11.532412"
+    },
+    {
+      "id": 3,
+      "origin": "solver",
+      "agent": "ppt_slide_solver_1",
+      "call_type": "ask",
+      "input_tokens": 352,
+      "output_tokens": 210,
+      "total_tokens": 562,
+      "stream": false,
+      "timestamp": "2025-05-20T03:50:30.112093"
+    }
+  ]
+}
+```
+
+`totals` 将所有可用统计数据相加，`calls` 则汇总各阶段的调用明细并标记来源与 agent 便于客户端独立展示。若某阶段缺乏统计数据，相应字段会省略。
+
+## 5. 聚合阶段事件
 
 `aggregate.start` / `aggregate.completed` 提供全量上下文，便于客户端需要时自行渲染最终结果：
 
@@ -111,7 +223,7 @@
 
 若客户端仅需最终汇总内容，可直接监听 `agent.final_answer` 与 `aggregate.completed`；若需要详细进度，可解析 `plan.*` / `solver.*`。
 
-## 5. 错误与取消
+## 6. 错误与取消
 
 - `agent.error`: Agent 在执行过程中出现异常。
 - `agent.timeout`: 超过最大步数或超时。
@@ -120,7 +232,7 @@
 
 客户端可在收到这些事件时提示用户或尝试重新发起会话。
 
-## 6. 示例事件序列
+## 7. 示例事件序列
 
 ```
 user.create_session

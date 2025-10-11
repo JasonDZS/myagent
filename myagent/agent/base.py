@@ -38,6 +38,16 @@ class BaseAgent(BaseModel, ABC):
     # Execution control
     max_steps: int = Field(default=10, description="Maximum steps before termination")
     current_step: int = Field(default=0, description="Current step in execution")
+    max_retry_attempts: int = Field(
+        default=0,
+        ge=0,
+        description="Number of additional retries allowed after an execution failure",
+    )
+    retry_delay_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Delay between retry attempts in seconds",
+    )
 
     duplicate_threshold: int = 1
     final_response: str | None = Field(
@@ -275,3 +285,37 @@ class BaseAgent(BaseModel, ABC):
     def messages(self, value: list[Message]):
         """Set the list of messages in the agent's memory."""
         self.memory.messages = value
+
+    def get_statistics(self) -> dict[str, Any]:
+        """Return accumulated LLM usage statistics for this agent."""
+        call_history: list[dict[str, Any]] = getattr(self.llm, "call_history", [])
+
+        total_input_tokens = sum(
+            record.get("input_tokens", 0) for record in call_history
+        )
+        total_output_tokens = sum(
+            record.get("output_tokens", 0) for record in call_history
+        )
+
+        calls: list[dict[str, Any]] = []
+        for record in call_history:
+            record_copy = record.copy()
+            metadata = record_copy.get("metadata")
+            if isinstance(metadata, dict):
+                record_copy["metadata"] = metadata.copy()
+            calls.append(record_copy)
+
+        return {
+            "agent": self.name,
+            "model": getattr(self.llm, "model", None),
+            "total_calls": len(call_history),
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "total_tokens": total_input_tokens + total_output_tokens,
+            "running_totals": {
+                "input_tokens": getattr(self.llm, "total_input_tokens", 0),
+                "output_tokens": getattr(self.llm, "total_completion_tokens", 0),
+                "max_input_tokens": getattr(self.llm, "max_input_tokens", None),
+            },
+            "calls": calls,
+        }

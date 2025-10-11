@@ -1,5 +1,6 @@
 import math
-from typing import ClassVar
+from datetime import datetime
+from typing import Any, ClassVar
 
 import tiktoken
 from openai import APIError
@@ -202,6 +203,7 @@ class LLM:
             # Add token counting related attributes
             self.total_input_tokens = 0
             self.total_completion_tokens = 0
+            self.call_history: list[dict[str, Any]] = []
             self.max_input_tokens = (
                 llm_config.max_input_tokens
                 if hasattr(llm_config, "max_input_tokens")
@@ -260,6 +262,57 @@ class LLM:
             return f"Request may exceed input token limit (Current: {self.total_input_tokens}, Needed: {input_tokens}, Max: {self.max_input_tokens})"
 
         return "Token limit exceeded"
+
+    def record_call(
+        self,
+        call_type: str,
+        metadata: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Record metadata for a completed LLM call."""
+        metadata = metadata.copy() if metadata else {}
+        record = {
+            "id": len(self.call_history) + 1,
+            "call_type": call_type,
+            "timestamp": datetime.utcnow().isoformat(),
+            "input_tokens": metadata.get("input_tokens", 0),
+            "output_tokens": metadata.get("output_tokens", 0),
+            "total_tokens": metadata.get("input_tokens", 0)
+            + metadata.get("output_tokens", 0),
+            "stream": metadata.get("stream", False),
+        }
+
+        if extra:
+            record.update(extra)
+
+        record["metadata"] = metadata
+        self.call_history.append(record)
+
+    def _log_call(
+        self,
+        call_type: str,
+        messages: list[dict],
+        response: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist call details and store them in memory for statistics."""
+        metadata = metadata or {}
+        llm_logger = get_llm_logger()
+        llm_logger.log_llm_call(
+            model=self.model,
+            messages=messages,
+            response=response,
+            metadata=metadata,
+        )
+
+        self.record_call(
+            call_type=call_type,
+            metadata=metadata,
+            extra={
+                "response_length": len(response),
+                "messages_count": len(messages),
+            },
+        )
 
     async def _traced_llm_call(self, method_name: str, inputs: dict, llm_call_func):
         """Wrapper for LLM calls with tracing."""
@@ -519,20 +572,20 @@ class LLM:
                     response.usage.prompt_tokens, response.usage.completion_tokens
                 )
 
-                # 记录LLM调用
-                llm_logger = get_llm_logger()
-                llm_logger.log_llm_call(
-                    model=self.model,
+                metadata = {
+                    "input_tokens": response.usage.prompt_tokens,
+                    "output_tokens": response.usage.completion_tokens,
+                    "stream": False,
+                    "temperature": (
+                        temperature if temperature is not None else self.temperature
+                    ),
+                }
+
+                self._log_call(
+                    call_type="ask",
                     messages=messages,
                     response=response.choices[0].message.content,
-                    metadata={
-                        "input_tokens": response.usage.prompt_tokens,
-                        "output_tokens": response.usage.completion_tokens,
-                        "stream": False,
-                        "temperature": (
-                            temperature if temperature is not None else self.temperature
-                        ),
-                    },
+                    metadata=metadata,
                 )
 
                 return response.choices[0].message.content
@@ -562,20 +615,20 @@ class LLM:
             )
             self.total_completion_tokens += completion_tokens
 
-            # 记录LLM调用
-            llm_logger = get_llm_logger()
-            llm_logger.log_llm_call(
-                model=self.model,
+            metadata = {
+                "input_tokens": input_tokens,
+                "output_tokens": completion_tokens,
+                "stream": True,
+                "temperature": (
+                    temperature if temperature is not None else self.temperature
+                ),
+            }
+
+            self._log_call(
+                call_type="ask",
                 messages=messages,
                 response=full_response,
-                metadata={
-                    "input_tokens": input_tokens,
-                    "output_tokens": completion_tokens,
-                    "stream": True,
-                    "temperature": (
-                        temperature if temperature is not None else self.temperature
-                    ),
-                },
+                metadata=metadata,
             )
 
             return full_response
@@ -718,26 +771,28 @@ class LLM:
 
                 self.update_token_count(response.usage.prompt_tokens)
 
-                # 记录LLM调用
-                llm_logger = get_llm_logger()
-                llm_logger.log_llm_call(
-                    model=self.model,
+                completion_tokens = (
+                    response.usage.completion_tokens
+                    if hasattr(response.usage, "completion_tokens")
+                    else 0
+                )
+
+                metadata = {
+                    "input_tokens": response.usage.prompt_tokens,
+                    "output_tokens": completion_tokens,
+                    "stream": False,
+                    "temperature": (
+                        temperature if temperature is not None else self.temperature
+                    ),
+                    "with_images": True,
+                    "image_count": len(images),
+                }
+
+                self._log_call(
+                    call_type="ask_with_images",
                     messages=all_messages,
                     response=response.choices[0].message.content,
-                    metadata={
-                        "input_tokens": response.usage.prompt_tokens,
-                        "output_tokens": (
-                            response.usage.completion_tokens
-                            if hasattr(response.usage, "completion_tokens")
-                            else 0
-                        ),
-                        "stream": False,
-                        "temperature": (
-                            temperature if temperature is not None else self.temperature
-                        ),
-                        "with_images": True,
-                        "image_count": len(images),
-                    },
+                    metadata=metadata,
                 )
 
                 return response.choices[0].message.content
@@ -761,22 +816,22 @@ class LLM:
             # 估算完成token数
             completion_tokens = self.count_tokens(full_response)
 
-            # 记录LLM调用
-            llm_logger = get_llm_logger()
-            llm_logger.log_llm_call(
-                model=self.model,
+            metadata = {
+                "input_tokens": input_tokens,
+                "output_tokens": completion_tokens,
+                "stream": True,
+                "temperature": (
+                    temperature if temperature is not None else self.temperature
+                ),
+                "with_images": True,
+                "image_count": len(images),
+            }
+
+            self._log_call(
+                call_type="ask_with_images",
                 messages=all_messages,
                 response=full_response,
-                metadata={
-                    "input_tokens": input_tokens,
-                    "output_tokens": completion_tokens,
-                    "stream": True,
-                    "temperature": (
-                        temperature if temperature is not None else self.temperature
-                    ),
-                    "with_images": True,
-                    "image_count": len(images),
-                },
+                metadata=metadata,
             )
 
             return full_response
@@ -909,28 +964,28 @@ class LLM:
                 response.usage.prompt_tokens, response.usage.completion_tokens
             )
 
-            # 记录LLM调用
-            llm_logger = get_llm_logger()
             message_content = response.choices[0].message.content or "[Tool Call]"
             logger.info(f"LLM Response Content: {message_content}")
             tool_calls = response.choices[0].message.tool_calls
             if tool_calls:
                 message_content += f" Tools: {[tc.function.name for tc in tool_calls]}"
 
-            llm_logger.log_llm_call(
-                model=self.model,
+            metadata = {
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+                "stream": False,
+                "temperature": (
+                    temperature if temperature is not None else self.temperature
+                ),
+                "tool_calls": len(tool_calls) if tool_calls else 0,
+                "tools_available": len(tools) if tools else 0,
+            }
+
+            self._log_call(
+                call_type="ask_tool",
                 messages=messages,
                 response=message_content,
-                metadata={
-                    "input_tokens": response.usage.prompt_tokens,
-                    "output_tokens": response.usage.completion_tokens,
-                    "stream": False,
-                    "temperature": (
-                        temperature if temperature is not None else self.temperature
-                    ),
-                    "tool_calls": len(tool_calls) if tool_calls else 0,
-                    "tools_available": len(tools) if tools else 0,
-                },
+                metadata=metadata,
             )
 
             return response.choices[0].message

@@ -189,9 +189,13 @@ class SlideDraftTool(BaseTool):
                 "properties": {
                     "id": {"type": "integer", "description": "Slide identifier"},
                     "title": {"type": "string", "description": "Slide title"},
-                    "text": {"type": "string", "description": "Primary narrative text"},
+                    "text": {
+                        "type": "string",
+                        "description": "Primary narrative text (single paragraph, <=100 characters, inline markdown ok)",
+                    },
                     "charts": {
                         "type": "array",
+                        "description": "Optional charts array (maximum 2 charts)",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -257,6 +261,16 @@ def _validate_slide_payload(slide: dict[str, Any]) -> str | None:
         if not str(slide[field_name]).strip():
             return f"Slide field '{field_name}' cannot be empty."
 
+    text_value = str(slide["text"]).strip()
+    if len(text_value) > 100:
+        return "Slide text must be 100 characters or fewer."
+    if "\n" in text_value or "\r" in text_value:
+        return "Slide text must be a single paragraph without line breaks."
+    stripped_text = text_value.lstrip()
+    bullet_starts = ("-", "*", "•")
+    if stripped_text.startswith(bullet_starts) or any(stripped_text.startswith(f"{i}. ") for i in range(1, 10)):
+        return "Slide text must be a sentence, not a list."
+
     if not isinstance(slide["id"], int):
         return "Slide id must be an integer."
 
@@ -264,6 +278,8 @@ def _validate_slide_payload(slide: dict[str, Any]) -> str | None:
     if charts:
         if not isinstance(charts, list):
             return "Charts must be a list."
+        if len(charts) > 2:
+            return "Slide cannot contain more than 2 charts."
         for chart in charts:
             if "data" not in chart:
                 return "Each chart must include a 'data' field."
@@ -350,6 +366,8 @@ class Data2PPTSlideSolver(SolverAgent):
                 "## Responsibilities\n"
                 "- Use db_schema and db_query to gather evidence supporting this slide's objective.\n"
                 "- Synthesize clear insights and translate them into compelling narrative text.\n"
+                "- Keep slide text to one paragraph (<=100 characters). Inline Markdown for emphasis/color is ok; no lists or line breaks.\n"
+                "- Limit each slide to at most two charts.\n"
                 "- Build chart-ready data when a visualization strengthens the message.\n"
                 "- Submit the final slide via submit_slide_draft (exactly once) with id/title/text and optional charts.\n"
                 "- Do NOT call generate_ppt; the orchestrator handles compilation.\n\n"
@@ -359,8 +377,8 @@ class Data2PPTSlideSolver(SolverAgent):
                 "Execution guide:\n"
                 "1. Review the task brief.\n"
                 "2. Explore data as needed using db_schema/db_query.\n"
-                "3. Summarize insights and craft the slide content.\n"
-                "4. Call submit_slide_draft once ready.\n"
+                "3. Summarize insights and craft <=100 character single-paragraph text (inline Markdown ok; no line breaks or lists).\n"
+                "4. Ensure charts are relevant (<=2) and call submit_slide_draft once ready.\n"
                 "5. Confirm completion and highlight key takeaways.\n"
                 "6. When finished, use the terminate tool."
             ),

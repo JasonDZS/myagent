@@ -341,11 +341,11 @@ class GeneratePPTTool(BaseTool):
                         },
                         "text": {
                             "type": "string",
-                            "description": "Slide content text",
+                            "description": "Slide content text (single paragraph, <=100 characters, inline markdown ok)",
                         },
                         "charts": {
                             "type": "array",
-                            "description": "Optional charts array",
+                            "description": "Optional charts array (maximum 2 charts)",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -400,8 +400,33 @@ class GeneratePPTTool(BaseTool):
                         error=f"Invalid slide structure. Each slide must have id, title, and text fields."
                     )
 
+                text_value = str(slide["text"]).strip()
+                if len(text_value) > 100:
+                    return ToolResult(
+                        error=f"Slide {slide['id']} text must be 100 characters or fewer."
+                    )
+                if "\n" in text_value or "\r" in text_value:
+                    return ToolResult(
+                        error=f"Slide {slide['id']} text must be a single paragraph without line breaks."
+                    )
+                stripped_text = text_value.lstrip()
+                bullet_starts = ("-", "*", "•")
+                if stripped_text.startswith(bullet_starts) or any(stripped_text.startswith(f"{i}. ") for i in range(1, 10)):
+                    return ToolResult(
+                        error=f"Slide {slide['id']} text must be a sentence, not a list."
+                    )
+
                 if "charts" in slide:
-                    for chart in slide["charts"]:
+                    charts = slide["charts"]
+                    if not isinstance(charts, list):
+                        return ToolResult(
+                            error=f"Invalid chart structure in slide {slide['id']}. Charts must be a list."
+                        )
+                    if len(charts) > 2:
+                        return ToolResult(
+                            error=f"Slide {slide['id']} cannot contain more than 2 charts."
+                        )
+                    for chart in charts:
                         if "data" not in chart:
                             return ToolResult(
                                 error=f"Invalid chart in slide {slide['id']}. Each chart must have a 'data' field."
@@ -448,6 +473,8 @@ agent = create_react_agent(
         "PPT Format Guidelines:\n"
         "- Each slide must have: id (integer), title (string), text (string)\n"
         "- Optional charts array with data points (name, value)\n"
+        "- Slide text must be a single paragraph (<=100 characters). Inline Markdown for bold/italic/color is allowed; avoid lists or line breaks.\n"
+        "- Limit each slide to at most two charts.\n"
         "- Chart types: 'bar', 'line', 'pie', 'area' (default: bar)\n"
         "- Layout: 'single' (1 chart) or 'double' (2 charts side-by-side)\n"
         "- For bar charts, use 'horizontal: true' for horizontal bars\n\n"

@@ -1,4 +1,10 @@
-"""WebSocket server example for Plan & Solve Data→PPT pipeline."""
+"""WebSocket server example for Plan & Solve Data→PPT pipeline.
+
+The server broadcasts pipeline progress events. Both `plan.completed` and
+`solver.completed` payloads expose a `statistics` field mirroring each
+agent's `get_statistics()` output so clients can track LLM usage cost for the
+planning stage and for every solver task in real time.
+"""
 
 from __future__ import annotations
 
@@ -35,6 +41,8 @@ def agent_factory():
         pipeline,
         name="plan_solve_data2ppt_ws",
         broadcast_tasks=True,
+        max_retry_attempts=1,
+        retry_delay_seconds=3.0,
     )
 
 

@@ -8,7 +8,9 @@ from websockets.server import WebSocketServerProtocol
 
 from myagent.agent.base import BaseAgent
 from myagent.logger import logger
+from myagent.schema import AgentState
 from .events import AgentEvents
+from .events import SystemEvents
 from .events import create_event
 from .utils import is_websocket_closed
 from .utils import send_websocket_message
@@ -32,6 +34,28 @@ class AgentSession:
         self.created_at = datetime.now()
         self.current_task: asyncio.Task | None = None
         self.step_counter = 0
+        max_attempts = getattr(agent, "max_retry_attempts", 0)
+        delay_seconds = getattr(agent, "retry_delay_seconds", 0.0)
+
+        try:
+            self.max_retry_attempts = max(0, int(max_attempts))
+        except (TypeError, ValueError):
+            logger.debug(
+                "Invalid max_retry_attempts on agent %s: %r. Falling back to 0.",
+                getattr(agent, "name", "unknown"),
+                max_attempts,
+            )
+            self.max_retry_attempts = 0
+
+        try:
+            self.retry_delay_seconds = max(0.0, float(delay_seconds))
+        except (TypeError, ValueError):
+            logger.debug(
+                "Invalid retry_delay_seconds on agent %s: %r. Falling back to 0.0.",
+                getattr(agent, "name", "unknown"),
+                delay_seconds,
+            )
+            self.retry_delay_seconds = 0.0
 
         # Set up agent callbacks to monitor execution status
         self._setup_agent_callbacks()
@@ -99,28 +123,67 @@ class AgentSession:
             self.current_task = None
 
     async def _run_agent_with_streaming(self, user_input: str) -> None:
-        """Run Agent and stream status updates"""
-        try:
-            # Reset agent state if it's finished or in error to allow reuse
-            from myagent.schema import AgentState
+        """Run Agent and stream status updates, retrying on failure when configured."""
+        total_attempts = self.max_retry_attempts + 1
+        last_error: Exception | None = None
 
-            if self.agent.state in [AgentState.FINISHED, AgentState.ERROR]:
+        for attempt in range(1, total_attempts + 1):
+            try:
+                await self._execute_agent_attempt(user_input, attempt, total_attempts)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - runtime safeguard
+                last_error = exc
+                if attempt == total_attempts:
+                    break
+                await self._handle_retry(attempt, total_attempts, exc)
+
+        if last_error:
+            raise last_error
+
+    async def _execute_agent_attempt(
+        self, user_input: str, attempt: int, total_attempts: int
+    ) -> None:
+        """Execute a single agent attempt and stream updates."""
+        try:
+            if self.agent.state in (AgentState.FINISHED, AgentState.ERROR):
                 logger.info(
-                    f"Resetting agent state from {self.agent.state} to IDLE for session {self.session_id}"
+                    "Resetting agent state from %s to IDLE for session %s before attempt %s/%s",
+                    self.agent.state,
+                    self.session_id,
+                    attempt,
+                    total_attempts,
                 )
                 self.agent.state = AgentState.IDLE
                 self.agent.current_step = 0
 
-                # Clean incomplete tool_calls messages to fix multi-turn conversation issues
-                messages_before = len(self.agent.memory.messages)
-                self.agent.memory.clean_incomplete_tool_calls()
-                messages_after = len(self.agent.memory.messages)
-                logger.info(
-                    f"Cleaned incomplete tool_calls from agent memory for session {self.session_id}: {messages_before} -> {messages_after} messages"
-                )
+                memory = getattr(self.agent, "memory", None)
+                if memory:
+                    messages_before = len(getattr(memory, "messages", []))
+                    try:
+                        memory.clean_incomplete_tool_calls()
+                    except Exception as clean_exc:  # pragma: no cover - best effort
+                        logger.debug(
+                            "Failed to clean incomplete tool calls for session %s: %s",
+                            self.session_id,
+                            clean_exc,
+                        )
+                    else:
+                        messages_after = len(getattr(memory, "messages", []))
+                        logger.info(
+                            "Cleaned incomplete tool_calls from agent memory for session %s: %s -> %s messages",
+                            self.session_id,
+                            messages_before,
+                            messages_after,
+                        )
 
-            # Monitor Agent tool calls
+            # Monitor Agent tool calls only once per tool collection
             self._wrap_tool_calls()
+
+            # Ensure final response is fresh for this attempt
+            if hasattr(self.agent, "final_response"):
+                self.agent.final_response = None
 
             # Set WebSocket session in context and agent for streaming support
             try:
@@ -128,25 +191,27 @@ class AgentSession:
 
                 set_ws_session_context(self)
                 self.agent.ws_session = self
-                logger.info(f"Set WebSocket session for agent: session_id={self.session_id}")
-            except Exception as e:
+                logger.info(
+                    "Set WebSocket session for agent: session_id=%s (attempt %s/%s)",
+                    self.session_id,
+                    attempt,
+                    total_attempts,
+                )
+            except Exception as e:  # pragma: no cover - runtime safeguard
                 logger.error(f"Could not set WebSocket session: {e}")
 
             # 执行 Agent
             if hasattr(self.agent, "arun"):
                 result = await self.agent.arun(user_input)
             elif hasattr(self.agent, "run"):
-                # 检查 run 方法是否是协程函数
                 run_method = self.agent.run(user_input)
                 if asyncio.iscoroutine(run_method):
                     result = await run_method
                 else:
-                    # 如果不是协程，直接使用结果
                     result = run_method
             else:
                 raise AttributeError("Agent has no run or arun method")
 
-            # Send final result - use agent.final_response instead of run() return value
             final_content = (
                 getattr(self.agent, "final_response", None) or str(result)
                 if result
@@ -161,7 +226,13 @@ class AgentSession:
             )
 
         except Exception as e:
-            logger.error(f"Agent execution error: {e}")
+            logger.error(
+                "Agent execution error for session %s on attempt %s/%s: %s",
+                self.session_id,
+                attempt,
+                total_attempts,
+                e,
+            )
             raise
         finally:
             # Clean up WebSocket session from context and agent
@@ -171,8 +242,124 @@ class AgentSession:
                 clear_ws_session_context()
                 self.agent.ws_session = None
                 logger.debug("Cleaned up WebSocket session")
-            except Exception as e:
+            except Exception as e:  # pragma: no cover - best effort
                 logger.debug(f"Could not clean up WebSocket session: {e}")
+
+    async def _handle_retry(
+        self, failed_attempt: int, total_attempts: int, error: Exception
+    ) -> None:
+        """Handle retry workflow between failed attempts."""
+        next_attempt = failed_attempt + 1
+        logger.warning(
+            "Agent execution failed for session %s (attempt %s/%s). Retrying attempt %s/%s after %.2fs. Error: %s",
+            self.session_id,
+            failed_attempt,
+            total_attempts,
+            next_attempt,
+            total_attempts,
+            self.retry_delay_seconds,
+            error,
+        )
+
+        await self._send_retry_notice(failed_attempt, total_attempts, error)
+        await self._reset_agent_between_attempts()
+
+        if self.retry_delay_seconds > 0:
+            await asyncio.sleep(self.retry_delay_seconds)
+
+    async def _send_retry_notice(
+        self, failed_attempt: int, total_attempts: int, error: Exception
+    ) -> None:
+        """Notify clients that a retry will be attempted."""
+        error_text = str(error)
+        if len(error_text) > 500:
+            error_text = f"{error_text[:497]}..."
+
+        metadata = {
+            "attempt": failed_attempt,
+            "total_attempts": total_attempts,
+            "next_attempt": failed_attempt + 1,
+            "retry_delay_seconds": self.retry_delay_seconds,
+            "error_type": error.__class__.__name__,
+            "error": error_text,
+        }
+
+        content = (
+            f"Attempt {failed_attempt}/{total_attempts} failed. "
+            f"Retrying attempt {failed_attempt + 1}/{total_attempts}."
+        )
+
+        await self._send_event(
+            create_event(
+                SystemEvents.NOTICE,
+                session_id=self.session_id,
+                content=content,
+                metadata=metadata,
+            )
+        )
+
+    async def _reset_agent_between_attempts(self) -> None:
+        """Reset agent state between retry attempts."""
+        reset_handler = getattr(self.agent, "reset_for_retry", None)
+        if reset_handler:
+            try:
+                outcome = reset_handler()
+                if asyncio.iscoroutine(outcome):
+                    await outcome
+                return
+            except Exception as exc:  # pragma: no cover - fallback safeguard
+                logger.debug(
+                    "Custom reset_for_retry failed for session %s: %s",
+                    self.session_id,
+                    exc,
+                )
+
+        try:
+            self.agent.state = AgentState.IDLE
+        except Exception as exc:  # pragma: no cover - fallback safeguard
+            logger.debug(
+                "Failed to reset agent state for retry in session %s: %s",
+                self.session_id,
+                exc,
+            )
+
+        try:
+            self.agent.current_step = 0
+        except Exception as exc:  # pragma: no cover - fallback safeguard
+            logger.debug(
+                "Failed to reset agent current_step for retry in session %s: %s",
+                self.session_id,
+                exc,
+            )
+
+        if hasattr(self.agent, "final_response"):
+            self.agent.final_response = None
+
+        memory = getattr(self.agent, "memory", None)
+        if memory:
+            try:
+                if hasattr(memory, "clear_for_retry"):
+                    outcome = memory.clear_for_retry()
+                    if asyncio.iscoroutine(outcome):
+                        await outcome
+                elif hasattr(memory, "clear"):
+                    memory.clear()
+            except Exception as exc:  # pragma: no cover - fallback safeguard
+                logger.debug(
+                    "Failed to reset agent memory for retry in session %s: %s",
+                    self.session_id,
+                    exc,
+                )
+
+            if hasattr(memory, "clean_incomplete_tool_calls"):
+                try:
+                    memory.clean_incomplete_tool_calls()
+                except Exception as exc:  # pragma: no cover - fallback safeguard
+                    logger.debug(
+                        "Failed to clean incomplete tool calls during retry reset for session %s: %s",
+                        self.session_id,
+                        exc,
+                    )
 
     def _wrap_tool_calls(self):
         """Wrap tool calls to provide real-time feedback"""
@@ -187,6 +374,13 @@ class AgentSession:
 
         # Check if it's a ToolCollection and wrap its execute method
         if hasattr(tools, "execute") and hasattr(tools, "tool_map"):
+            if getattr(tools, "_ws_wrapped", False):
+                logger.debug(
+                    "ToolCollection already wrapped for session %s. Skipping re-wrap.",
+                    self.session_id,
+                )
+                return
+
             original_execute = tools.execute
             logger.info(
                 f"Wrapping ToolCollection.execute with {len(tools.tool_map)} tools: {list(tools.tool_map.keys())}"
@@ -272,6 +466,7 @@ class AgentSession:
 
             # Replace the ToolCollection's execute method
             tools.execute = wrapped_collection_execute
+            setattr(tools, "_ws_wrapped", True)
             logger.info("Successfully wrapped ToolCollection.execute method")
         else:
             logger.warning(f"Unknown tools structure: {type(tools)}, cannot wrap")
