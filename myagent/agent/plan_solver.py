@@ -19,7 +19,7 @@ from pydantic import Field
 from ..logger import logger
 from ..schema import AgentState
 from ..ws import get_ws_session_context, send_websocket_message
-from ..ws.events import create_event
+from ..ws.events import create_event, AgentEvents
 from .base import BaseAgent
 
 AggregateFn = Callable[["PlanContext", Sequence["SolverRunResult"]], Any]
@@ -111,6 +111,16 @@ class PlanAgent:
             return agent.final_response  # type: ignore[attr-defined]
         return plan_output
 
+    # -- Optional hook -------------------------------------------------
+    def coerce_tasks(self, tasks: Sequence[Any]) -> Sequence[Any]:
+        """Optionally coerce user-provided/edited tasks into the planner's task type.
+
+        Default implementation returns tasks unchanged. Concrete planners can
+        override this to convert dictionaries into domain-specific task objects
+        (e.g., dataclasses) to satisfy solver expectations.
+        """
+        return tasks
+
 
 class SolverAgent:
     """Base class for solver agents that execute individual plan tasks."""
@@ -166,7 +176,15 @@ class PlanSolverPipeline:
         self.progress_callback = progress_callback
 
     async def run(self, question: str) -> PlanSolveResult:
-        """Execute the plan → solve pipeline for the provided question."""
+        """Execute the plan → solve pipeline for the provided question.
+
+        Backwards-compatible wrapper that performs planning, then solving+aggregation.
+        """
+        context = await self.plan(question)
+        return await self.solve_and_aggregate(context)
+
+    async def plan(self, question: str) -> PlanContext:
+        """Run planning stage and emit plan events, returning a PlanContext."""
         await self._notify("plan.start", {"question": question})
 
         plan_agent = self.planner.build_agent()
@@ -208,10 +226,15 @@ class PlanSolverPipeline:
             },
         )
 
+        return context
+
+    async def solve_and_aggregate(self, context: PlanContext) -> PlanSolveResult:
+        """Execute solver stage for the given context and aggregate results."""
+        tasks = list(context.tasks)
         solver_results = await self._run_solvers(tasks, context)
         aggregate_output = await self._run_aggregator(context, solver_results)
         pipeline_statistics = self._build_pipeline_statistics(
-            plan_statistics, solver_results
+            context.plan_statistics, solver_results
         )
 
         await self._notify(
@@ -317,30 +340,12 @@ class PlanSolverPipeline:
         if not has_plan and not solver_stats:
             return None
 
-        total_calls = 0
-        total_input_tokens = 0
-        total_output_tokens = 0
         combined_calls: list[dict[str, Any]] = []
 
         def _accumulate(stat: dict[str, Any] | None, origin: str, agent_name: str) -> None:
-            nonlocal total_calls, total_input_tokens, total_output_tokens, combined_calls
+            nonlocal combined_calls
             if not stat:
                 return
-            total_calls += int(stat.get("total_calls", 0) or 0)
-
-            def _resolve_total(key: str) -> int:
-                value = stat.get(key)
-                if isinstance(value, (int, float)):
-                    return int(value)
-                running = stat.get("running_totals", {})
-                if isinstance(running, dict):
-                    running_val = running.get("input_tokens" if key == "total_input_tokens" else "output_tokens")
-                    if isinstance(running_val, (int, float)):
-                        return int(running_val)
-                return 0
-
-            total_input_tokens += _resolve_total("total_input_tokens")
-            total_output_tokens += _resolve_total("total_output_tokens")
 
             calls = stat.get("calls")
             if isinstance(calls, list):
@@ -366,6 +371,23 @@ class PlanSolverPipeline:
                     "statistics": stats,
                 }
             )
+
+        # Derive totals directly from the unified call list to ensure consistency
+        def _get_token(call: dict[str, Any], key: str) -> int:
+            # Prefer top-level token fields; fall back to metadata if present
+            val = call.get(key)
+            if isinstance(val, (int, float)):
+                return int(val)
+            meta = call.get("metadata")
+            if isinstance(meta, dict):
+                mval = meta.get("input_tokens" if key == "input_tokens" else "output_tokens")
+                if isinstance(mval, (int, float)):
+                    return int(mval)
+            return 0
+
+        total_calls = len(combined_calls)
+        total_input_tokens = sum(_get_token(c, "input_tokens") for c in combined_calls)
+        total_output_tokens = sum(_get_token(c, "output_tokens") for c in combined_calls)
 
         totals = {
             "total_calls": total_calls,
@@ -453,6 +475,14 @@ class PlanSolverSessionAgent(BaseAgent):
         default=True,
         description="Whether to include full task payloads in plan.completed events",
     )
+    require_plan_confirmation: bool = Field(
+        default=False,
+        description="If true, waits for user confirmation after planning to allow editing tasks before solving.",
+    )
+    plan_confirmation_timeout: int = Field(
+        default=300,
+        description="Timeout (seconds) for plan confirmation before proceeding or aborting.",
+    )
 
     class Config:
         arbitrary_types_allowed = True
@@ -470,7 +500,49 @@ class PlanSolverSessionAgent(BaseAgent):
         self.pipeline.set_progress_callback(self._progress_callback)
 
         try:
-            result = await self.pipeline.run(question)
+            if not self.require_plan_confirmation:
+                result = await self.pipeline.run(question)
+                summary = result.plan_summary or "Plan & Solve pipeline completed."
+                self.final_response = summary
+                return summary
+
+            # 1) Run planning only
+            context = await self.pipeline.plan(question)
+
+            # 2) Ask user to confirm/edit tasks via WebSocket and wait for response
+            edited_tasks, proceed = await self._await_plan_confirmation(context)
+            if not proceed:
+                summary = "Plan was declined by user."
+                self.final_response = summary
+                return summary
+
+            # 3) Build a new context with user-edited tasks if provided
+            if edited_tasks is not None:
+                try:
+                    edited_tasks = list(self.pipeline.planner.coerce_tasks(edited_tasks))
+                except Exception as exc:
+                    # If coercion fails, stop early with a clear final response
+                    await self._emit_event(
+                        "plan.coercion_error",
+                        {
+                            "message": "Failed to coerce edited tasks; aborting.",
+                            "error": str(exc),
+                        },
+                    )
+                    summary = f"Plan confirmation contained invalid tasks: {exc}"
+                    self.final_response = summary
+                    return summary
+                context = PlanContext(
+                    name=context.name,
+                    question=context.question,
+                    tasks=edited_tasks,
+                    plan_summary=context.plan_summary,
+                    raw_plan_output=context.raw_plan_output,
+                    plan_statistics=context.plan_statistics,
+                )
+
+            # 4) Proceed to solver + aggregation
+            result = await self.pipeline.solve_and_aggregate(context)
             summary = result.plan_summary or "Plan & Solve pipeline completed."
             self.final_response = summary
             return summary
@@ -489,7 +561,7 @@ class PlanSolverSessionAgent(BaseAgent):
 
         await self._emit_event(event, content)
 
-    async def _emit_event(self, event: str, content: Any) -> None:
+    async def _emit_event(self, event: str, content: Any, *, metadata: dict[str, Any] | None = None, step_id: str | None = None) -> None:
         session = get_ws_session_context()
         if not session:
             return
@@ -499,7 +571,7 @@ class PlanSolverSessionAgent(BaseAgent):
         else:
             event_type = event
         session_id = getattr(session, "session_id", None)
-        ws_event = create_event(event_type, session_id=session_id, content=content)
+        ws_event = create_event(event_type, session_id=session_id, content=content, metadata=metadata, step_id=step_id)
 
         if hasattr(session, "_send_event"):
             await session._send_event(ws_event)  # type: ignore[attr-defined]
@@ -528,6 +600,65 @@ class PlanSolverSessionAgent(BaseAgent):
             }
         return str(value)
 
+    async def _await_plan_confirmation(self, context: PlanContext) -> tuple[list[Any] | None, bool]:
+        """Send a plan confirmation request and wait for user's response.
+
+        Returns: (edited_tasks, proceed)
+        - edited_tasks: if user provided a new task list, return it, otherwise None
+        - proceed: True to continue to solver, False if user declined
+        """
+        session = get_ws_session_context()
+        if not session:
+            # Not running under WS, proceed without confirmation
+            return None, True
+
+        import uuid
+
+        step_id = f"confirm_plan_{uuid.uuid4().hex[:8]}"
+
+        # Emit a user confirmation request with full tasks as metadata
+        try:
+            ws_event = create_event(
+                AgentEvents.USER_CONFIRM,
+                session_id=getattr(session, "session_id", None),
+                step_id=step_id,
+                content="Confirm plan before solving",
+                metadata={
+                    "requires_confirmation": True,
+                    "scope": "plan",
+                    "plan_summary": context.plan_summary,
+                    "tasks": self._make_serializable(list(context.tasks)),
+                },
+            )
+            if hasattr(session, "_send_event"):
+                await session._send_event(ws_event)  # type: ignore[attr-defined]
+            else:
+                await send_websocket_message(session.websocket, ws_event)  # type: ignore[attr-defined]
+        except Exception:
+            # Best effort: in case event emission fails, proceed
+            return None, True
+
+        # Wait for user response
+        try:
+            if hasattr(session, "_wait_for_user_response"):
+                response = await session._wait_for_user_response(step_id, timeout=self.plan_confirmation_timeout)  # type: ignore[attr-defined]
+            else:
+                return None, True
+        except Exception:
+            return None, True
+
+        confirmed = bool(response.get("confirmed", False)) if isinstance(response, dict) else False
+        if not confirmed:
+            return None, False
+
+        edited_tasks = None
+        if isinstance(response, dict) and "tasks" in response:
+            maybe_tasks = response.get("tasks")
+            if isinstance(maybe_tasks, list):
+                edited_tasks = maybe_tasks
+
+        return edited_tasks, True
+
 
 def create_plan_solver_session_agent(
     pipeline: PlanSolverPipeline,
@@ -537,6 +668,8 @@ def create_plan_solver_session_agent(
     broadcast_tasks: bool = True,
     max_retry_attempts: int = 0,
     retry_delay_seconds: float = 0.0,
+    require_plan_confirmation: bool = False,
+    plan_confirmation_timeout: int = 300,
 ) -> PlanSolverSessionAgent:
     """Factory to wrap a PlanSolverPipeline for WebSocket usage.
 
@@ -559,4 +692,6 @@ def create_plan_solver_session_agent(
         broadcast_tasks=broadcast_tasks,
         max_retry_attempts=max_retry_attempts,
         retry_delay_seconds=retry_delay_seconds,
+        require_plan_confirmation=require_plan_confirmation,
+        plan_confirmation_timeout=plan_confirmation_timeout,
     )

@@ -408,6 +408,18 @@ class Data2PPTPlanAgent(PlanAgent):
             return agent.final_response  # type: ignore[attr-defined]
         return plan_output
 
+    def coerce_tasks(self, tasks: Sequence[Any]) -> Sequence[Any]:
+        """Coerce user-edited tasks (dicts) into SlideTask objects when needed."""
+        coerced: list[SlideTask] = []
+        for t in tasks:
+            if isinstance(t, SlideTask):
+                coerced.append(t)
+            elif isinstance(t, dict):
+                coerced.append(_parse_slide_task(t))
+            else:
+                raise ValueError(f"Unsupported task payload type: {type(t)}")
+        return coerced
+
 
 class Data2PPTSlideSolver(SolverAgent):
     """Solver agent that turns a single slide task into a PPT-ready draft."""

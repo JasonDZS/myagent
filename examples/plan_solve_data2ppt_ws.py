@@ -43,6 +43,8 @@ def agent_factory():
         broadcast_tasks=True,
         max_retry_attempts=1,
         retry_delay_seconds=3.0,
+        require_plan_confirmation=True,
+        plan_confirmation_timeout=600,
     )
 
 

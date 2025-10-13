@@ -4,6 +4,11 @@
 
 ## 1. 建立连接与会话
 
+快速启动（示例服务）
+
+- 启动服务：`python examples/plan_solve_data2ppt_ws.py --host 0.0.0.0 --port 8086`
+- 客户端连接：`ws://127.0.0.1:8086`（使用具体 IP 连接，`0.0.0.0` 仅用于监听）
+
 1. 连接 `ws://<host>:<port>`。
 2. 发送 `user.create_session` 创建会话：
    ```json
@@ -31,6 +36,11 @@
    }
    ```
 
+5. 如需中断执行，可在任意时刻发送 `user.cancel`（详见第 6 节）：
+   ```json
+   { "event": "user.cancel", "session_id": "<session_id>" }
+   ```
+
 会话创建后，服务器会按照以下事件顺序推送进度。客户端应监听所有消息，按 `event` 字段解析。
 
 ## 2. 进度事件一览
@@ -45,7 +55,93 @@
 | `aggregate.completed` | 聚合阶段完成 | `{ "context": { ... }, "solver_results": [...], "output": ... }` |
 | `pipeline.completed` | 全流程收尾（全部求解与聚合完成） | `{ "context": { ... }, "solver_results": [...], "aggregate_output": ..., "statistics": { ... } }` |
 | `agent.final_answer` | Agent 最终回应 | `"<最终总结文本>"` |
-| `agent.session_end` | 会话结束（可能因取消或正常结束产生） | `"Session closed"` |
+| `agent.session_end` | 会话被关闭（断开连接或显式关闭） | `"Session closed"` |
+| `plan.coercion_error` | 计划确认后的任务无法被服务端转换 | `{ "message": "...", "error": "..." }` |
+
+相关通用事件（用于更细粒度调试/可视化）：
+
+- `agent.tool_call` / `agent.tool_result`：工具调用开始与返回（含工具名、状态、可选数据）。
+- `agent.user_confirm` / `user.response`：请求用户确认（可能出现在“计划确认”或“工具执行确认”两种场景）。
+- `system.heartbeat`：服务端心跳（含活跃会话数量等元信息）。
+
+### 2.1 计划阶段的用户确认（可选）
+
+若服务器端启用了“计划后需要用户确认”（示例服务已启用），在 `plan.completed` 之后会推送一个 `agent.user_confirm` 请求，等待用户确认或编辑任务后继续：
+
+请求示例：
+
+```json
+{
+  "event": "agent.user_confirm",
+  "session_id": "<session_id>",
+  "step_id": "confirm_plan_ab12cd34",
+  "content": "Confirm plan before solving",
+  "metadata": {
+    "requires_confirmation": true,
+    "scope": "plan",
+    "plan_summary": "生成 2 页销售概览幻灯片",
+    "tasks": [ ... 与 plan.completed 中的一致 ... ]
+  },
+  "timestamp": "..."
+}
+```
+
+客户端可通过 `user.response` 回复，回传 `step_id` 并在 `content` 中给出确认结果与可选的任务修改：
+
+```json
+{
+  "event": "user.response",
+  "session_id": "<session_id>",
+  "step_id": "confirm_plan_ab12cd34",
+  "content": {
+    "confirmed": true,
+    "tasks": [
+      { "id": 1, "title": "销售概览(修改)", ... },
+      { "id": 2, "title": "重点区域分析", ... }
+    ]
+  }
+}
+```
+
+注意：
+
+- `confirmed=false` 或超时未确认时，当前执行会被结束（推送 `agent.final_answer`，提示计划被拒绝）。
+- 若提供了 `tasks`，服务端将以该任务列表为准进入 `solver.*` 阶段；未提供则使用规划阶段原始 `tasks`。
+- 默认确认超时为 300 秒（示例服务设置为 600 秒）。
+ - 任务结构要求：需与计划阶段输出的任务结构一致。若服务器的 Planner 支持“任务类型转换”（coerce），将把字典任务转换为内部任务对象（如 SlideTask）；否则不合法的任务结构会导致执行失败。
+
+### 2.2 工具执行的用户确认（可选）
+
+某些工具在执行前会请求用户确认，服务端同样推送 `agent.user_confirm`，但 `metadata.scope` 不再是 `plan`，而包含工具信息：
+
+请求示例：
+
+```json
+{
+  "event": "agent.user_confirm",
+  "session_id": "<session_id>",
+  "step_id": "confirm_7b2b3e1a_toolname",
+  "content": "Confirm tool execution: fetch_private_data",
+  "metadata": {
+    "requires_confirmation": true,
+    "tool_name": "fetch_private_data",
+    "tool_description": "将读取私有数据...",
+    "tool_args": { "id": 123 }
+  },
+  "timestamp": "..."
+}
+```
+
+客户端使用相同的 `user.response` 回复，确认结果仅要求 `confirmed` 布尔值即可：
+
+```json
+{
+  "event": "user.response",
+  "session_id": "<session_id>",
+  "step_id": "confirm_7b2b3e1a_toolname",
+  "content": { "confirmed": true }
+}
+```
 
 > `context` 与 `solver_results` 会随着 `_make_serializable` 自动展开成 JSON 结构，其中 `tasks`、`plan_summary` 等字段与前述事件保持一致。`aggregate_output` 通常包含生成的 PPT JSON 以及工具返回信息。
 
@@ -227,10 +323,28 @@
 
 - `agent.error`: Agent 在执行过程中出现异常。
 - `agent.timeout`: 超过最大步数或超时。
-- `agent.interrupted`: 服务器端取消执行（如收到 `user.cancel`）。
+- `agent.interrupted`: 执行被中断（如收到 `user.cancel`）。
 - `system.error`: 协议层错误（如 JSON 解析失败）。
 
-客户端可在收到这些事件时提示用户或尝试重新发起会话。
+中断（用户取消）的要点：
+
+- 取消方式：发送 `user.cancel`，必须携带要取消的 `session_id`。
+  ```json
+  { "event": "user.cancel", "session_id": "<session_id>" }
+  ```
+- 服务端行为：
+  - 取消当前执行任务（异步任务被 `cancel()`）。
+  - 清理未完成的 tool_calls 记录，重置 Agent 到 `IDLE`，将会话状态置为 `idle`。
+  - 推送 `agent.interrupted` 事件，内容示例：
+    ```json
+    {
+      "event": "agent.interrupted",
+      "session_id": "<session_id>",
+      "content": "Execution cancelled",
+      "timestamp": "..."
+    }
+    ```
+- 取消并不会关闭会话，不会触发 `agent.session_end`。同一个 `session_id` 仍可继续发送新的 `user.message` 复用会话。
 
 ## 7. 示例事件序列
 
@@ -252,3 +366,61 @@ user.message (带 session_id)
 ```
 
 客户端按 `event` 订阅处理即可获取完整的执行过程与成果。若服务端启用了并发，多个 `solver.start` / `solver.completed` 可能交错出现，客户端应通过 `content.task.id` 区分。
+
+### 7.1 含取消的序列（示例）
+
+```
+user.create_session
+└─ agent.session_created (含 session_id)
+user.message (带 session_id)
+├─ plan.start
+├─ plan.completed
+user.cancel (带 session_id)
+└─ agent.interrupted
+```
+
+取消后会话保持 `idle` 可复用，若需要彻底结束会话，可断开连接或让服务器端执行会话关闭（收到 `agent.session_end`）。
+
+### 7.2 含计划确认并编辑任务（示例）
+
+```
+user.create_session
+└─ agent.session_created (含 session_id)
+user.message (带 session_id)
+├─ plan.start
+├─ plan.completed
+├─ agent.user_confirm (scope=plan, 携带 tasks)
+user.response (step_id 对应，confirmed=true，含编辑后的 tasks)
+├─ solver.start (task 1 - 已按编辑后的任务)
+├─ solver.completed (task 1)
+├─ solver.start (task 2)
+├─ solver.completed (task 2)
+├─ aggregate.start
+├─ aggregate.completed
+├─ pipeline.completed
+└─ agent.final_answer
+```
+
+若 `confirmed=false` 或超时，计划被拒绝，本次执行结束（收到 `agent.final_answer` 提示），会话仍可复用。
+
+## 8. 客户端辅助工具
+
+内置测试脚本：`scripts/ws_print_messages.py`
+
+- 自动取消：`--cancel-after <seconds>` 在会话建立（及问题发送）后 N 秒发送 `user.cancel`。
+- 自动确认计划：`--auto-confirm-plan` 在收到 `agent.user_confirm(scope=plan)` 时自动回 `user.response`，默认仅设置 `{"confirmed": true}`。
+- 覆盖计划任务：`--confirm-plan-tasks-file <file>` 指定一个包含任务数组的 JSON 文件，与 `--auto-confirm-plan` 搭配用于替换 `tasks`。
+- 交互式确认：默认开启，收到 `agent.user_confirm` 时在终端等待输入（`y`/`n`），可用 `--no-interactive-confirm` 关闭；可用 `--confirm-timeout <seconds>` 设置超时。
+
+示例：
+
+- 启动服务：
+  - `python examples/plan_solve_data2ppt_ws.py --host 0.0.0.0 --port 8086`
+- 自动同意计划：
+  - `python scripts/ws_print_messages.py --host 127.0.0.1 --port 8086 --question "请根据数据生成PPT" --auto-confirm-plan`
+- 自动同意并覆盖任务：
+  - `python scripts/ws_print_messages.py --host 127.0.0.1 --port 8086 --question "请根据数据生成PPT" --auto-confirm-plan --confirm-plan-tasks-file ./my_tasks.json`
+ - 交互式确认并可选覆盖任务（运行时输入）：
+   - `python scripts/ws_print_messages.py --host 127.0.0.1 --port 8086 --question "请根据数据生成PPT" --confirm-timeout 60`
+
+注意：示例服务已启用计划确认（`require_plan_confirmation=True`），确认超时 600 秒（`plan_confirmation_timeout=600`）。
