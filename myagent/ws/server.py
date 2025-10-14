@@ -490,22 +490,65 @@ class AgentWebSocketServer:
         agent = session.agent
         content = message.get("content") or {}
         new_question = content.get("question") if isinstance(content, dict) else None
-        if hasattr(agent, "replan"):
-            ok = await agent.replan(new_question)  # type: ignore[attr-defined]
+        # If session is running, request in-run replan; otherwise start a new run
+        if session.state == "running":
+            if hasattr(agent, "replan"):
+                ok = await agent.replan(new_question)  # type: ignore[attr-defined]
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        SystemEvents.NOTICE,
+                        session_id=session_id,
+                        content=("Replan requested" if ok else "Replan request rejected"),
+                        metadata={"action": "replan", "ok": ok, "mode": "in_run"},
+                    ),
+                )
+            else:
+                await self._send_event(
+                    websocket,
+                    create_event(AgentEvents.ERROR, session_id=session_id, content="Agent does not support replan"),
+                )
+            return
+
+        # Session idle: start a new planning run
+        question = None
+        if isinstance(new_question, str) and new_question.strip():
+            question = new_question.strip()
+        else:
+            # Try to recover last question from agent memory
+            try:
+                last_user_msg = (
+                    agent._get_last_user_message()  # type: ignore[attr-defined]
+                    if hasattr(agent, "_get_last_user_message")
+                    else None
+                )
+                if last_user_msg and getattr(last_user_msg, "content", None):
+                    question = str(last_user_msg.content)
+            except Exception:
+                question = None
+
+        if not question:
             await self._send_event(
                 websocket,
                 create_event(
-                    SystemEvents.NOTICE,
+                    AgentEvents.ERROR,
                     session_id=session_id,
-                    content=("Replan requested" if ok else "Replan request rejected"),
-                    metadata={"action": "replan", "ok": ok},
+                    content="Replan requires a question when session is idle",
                 ),
             )
-        else:
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Agent does not support replan"),
-            )
+            return
+
+        # Launch execute_streaming without blocking the handler
+        asyncio.create_task(session.execute_streaming(question))
+        await self._send_event(
+            websocket,
+            create_event(
+                SystemEvents.NOTICE,
+                session_id=session_id,
+                content="Replan started",
+                metadata={"action": "replan", "mode": "restart", "question": question[:120]},
+            ),
+        )
 
     async def _cancel_session(self, session_id: str) -> None:
         """Cancel session execution"""

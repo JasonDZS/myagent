@@ -11,28 +11,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from myagent.agent.plan_solver import (
-    create_plan_solver,
-    create_plan_solver_session_agent,
-)
+from myagent.agent.plan_solver import create_plan_solver_session_agent
 from myagent.ws import AgentWebSocketServer
 
-from plan_solve_data2ppt import (
-    Data2PPTPlanAgent,
-    Data2PPTSlideSolver,
-    compile_presentation,
-)
+# Use the implementation under slide_agent_ws for better structure and reusability
+from slide_agent_ws.pipeline import build_pipeline as build_pipeline_impl
 
 
 def build_pipeline():
     """Create a fresh pipeline instance for each WebSocket session."""
-    return create_plan_solver(
-        name="plan_solve_data2ppt",
-        planner=Data2PPTPlanAgent(),
-        solver=Data2PPTSlideSolver(),
-        concurrency=5,
-        aggregator=compile_presentation,
-    )
+    return build_pipeline_impl()
 
 
 def agent_factory():

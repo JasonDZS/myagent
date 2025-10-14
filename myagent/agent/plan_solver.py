@@ -274,9 +274,10 @@ class PlanSolverPipeline:
         semaphore = asyncio.Semaphore(self.concurrency) if self.concurrency else None
 
         async def _execute(task: Any) -> SolverRunResult:
-            await self._notify("solver.start", {"task": task})
 
             async def _run() -> SolverRunResult:
+                # Emit start only when the task actually acquires a slot
+                await self._notify("solver.start", {"task": task})
                 agent = self.solver.build_agent(task, context=context)
                 request = self.solver.build_request(task, context=context)
                 solver_output = await agent.run(request)
@@ -657,6 +658,9 @@ class PlanSolverSessionAgent(BaseAgent):
         self._replan_requested: bool = False
         self._replan_question: str | None = None
         self._solving_started: bool = False
+        # Keep last context and results for post-completion single-task rerun
+        self._last_context: PlanContext | None = None
+        self._last_solver_results: list[SolverRunResult] = []
 
         try:
             if not self.require_plan_confirmation:
@@ -690,6 +694,10 @@ class PlanSolverSessionAgent(BaseAgent):
                 # Ask user to confirm/edit tasks
                 edited_tasks, proceed = await self._await_plan_confirmation(context)
                 if not proceed:
+                    # If a replan was requested during confirmation, loop to replan
+                    if self._replan_requested:
+                        self._replan_requested = False
+                        continue
                     summary = "Plan was declined by user."
                     self.final_response = summary
                     return summary
@@ -731,6 +739,12 @@ class PlanSolverSessionAgent(BaseAgent):
             result = await self.pipeline.solve_and_aggregate(context)
             summary = result.plan_summary or "Plan & Solve pipeline completed."
             self.final_response = summary
+            # Cache context and results for potential post-completion restarts
+            self._last_context = context
+            try:
+                self._last_solver_results = list(result.solver_results)
+            except Exception:
+                self._last_solver_results = []
             return summary
         finally:
             self.pipeline.set_progress_callback(None)
@@ -885,10 +899,66 @@ class PlanSolverSessionAgent(BaseAgent):
             return False
 
     async def restart_solver_task(self, task_id: int | str) -> bool:
-        if not self._solving_started:
+        # Case 1: during solving, delegate to pipeline's in-run restart
+        if self._solving_started:
+            try:
+                return await self.pipeline.request_restart_solver_task(task_id)
+            except Exception:
+                return False
+
+        # Case 2: after completion, rerun a single task and re-aggregate
+        context = getattr(self, "_last_context", None)
+        if not context:
             return False
+
+        def _tid(x: Any) -> Any:
+            try:
+                if isinstance(x, dict):
+                    return x.get("id")
+                return getattr(x, "id", None)
+            except Exception:
+                return None
+
+        target_task = None
+        for t in context.tasks:
+            if _tid(t) == task_id or str(_tid(t)) == str(task_id):
+                target_task = t
+                break
+        if target_task is None:
+            return False
+
+        # Emit solver.restarted for visibility
+        await self._emit_event(AgentEvents.SOLVER_RESTARTED, {"task": target_task})
+
+        # Ensure progress callback active
+        self.pipeline.set_progress_callback(self._progress_callback)
+
+        # Run single-task solver
         try:
-            return await self.pipeline.request_restart_solver_task(task_id)
+            new_results = await self.pipeline._run_solvers([target_task], context)  # type: ignore[attr-defined]
+        except Exception:
+            return False
+        if not new_results:
+            return False
+        new_res = new_results[0]
+
+        # Merge with previous results, replacing same task id
+        updated_results: list[SolverRunResult] = []
+        replaced = False
+        for r in getattr(self, "_last_solver_results", []) or []:
+            if _tid(r.task) == _tid(target_task):
+                updated_results.append(new_res)
+                replaced = True
+            else:
+                updated_results.append(r)
+        if not replaced:
+            updated_results.append(new_res)
+
+        # Re-run aggregator to emit updated aggregate events
+        try:
+            await self.pipeline._run_aggregator(context, updated_results)  # type: ignore[attr-defined]
+            self._last_solver_results = updated_results
+            return True
         except Exception:
             return False
 
