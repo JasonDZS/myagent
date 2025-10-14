@@ -135,6 +135,22 @@ class AgentWebSocketServer:
             logger.info(f"Handling CANCEL event for session {session_id}")
             await self._cancel_session(session_id)
 
+        elif event_type == UserEvents.CANCEL_TASK and session_id:
+            logger.info(f"Handling CANCEL_TASK event for session {session_id}")
+            await self._handle_cancel_task(websocket, session_id, message)
+
+        elif event_type == UserEvents.RESTART_TASK and session_id:
+            logger.info(f"Handling RESTART_TASK event for session {session_id}")
+            await self._handle_restart_task(websocket, session_id, message)
+
+        elif event_type == UserEvents.CANCEL_PLAN and session_id:
+            logger.info(f"Handling CANCEL_PLAN event for session {session_id}")
+            await self._handle_cancel_plan(websocket, session_id, message)
+
+        elif event_type == UserEvents.REPLAN and session_id:
+            logger.info(f"Handling REPLAN event for session {session_id}")
+            await self._handle_replan(websocket, session_id, message)
+
         elif event_type == UserEvents.RECONNECT_WITH_STATE:
             logger.info("Handling RECONNECT_WITH_STATE event")
             await self._handle_reconnect_with_state(websocket, connection_id, message)
@@ -325,6 +341,170 @@ class AgentWebSocketServer:
                     session_id=session_id,
                     content=f"Error processing user response: {e!s}",
                 ),
+            )
+
+    async def _handle_cancel_task(
+        self,
+        websocket: WebSocketServerProtocol,
+        session_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        session = self.sessions.get(session_id)
+        if not session:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
+            )
+            return
+        content = message.get("content") or {}
+        task_id = content.get("task_id") if isinstance(content, dict) else None
+        if task_id is None:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Missing task_id for cancel_task"),
+            )
+            return
+        agent = session.agent
+        if hasattr(agent, "cancel_solver_task"):
+            try:
+                ok = await agent.cancel_solver_task(task_id)  # type: ignore[attr-defined]
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        SystemEvents.NOTICE,
+                        session_id=session_id,
+                        content=(
+                            f"Cancel task request for {task_id} accepted" if ok else f"No running task {task_id} to cancel"
+                        ),
+                        metadata={"task_id": task_id, "action": "cancel_task", "ok": ok},
+                    ),
+                )
+            except Exception as e:
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        AgentEvents.ERROR,
+                        session_id=session_id,
+                        content=f"Failed to cancel task {task_id}: {e!s}",
+                    ),
+                )
+        else:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Agent does not support cancel_solver_task"),
+            )
+
+    async def _handle_restart_task(
+        self,
+        websocket: WebSocketServerProtocol,
+        session_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        session = self.sessions.get(session_id)
+        if not session:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
+            )
+            return
+        content = message.get("content") or {}
+        task_id = content.get("task_id") if isinstance(content, dict) else None
+        if task_id is None:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Missing task_id for restart_task"),
+            )
+            return
+        agent = session.agent
+        if hasattr(agent, "restart_solver_task"):
+            try:
+                ok = await agent.restart_solver_task(task_id)  # type: ignore[attr-defined]
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        SystemEvents.NOTICE,
+                        session_id=session_id,
+                        content=f"Restart task request for {task_id} submitted",
+                        metadata={"task_id": task_id, "action": "restart_task", "ok": ok},
+                    ),
+                )
+            except Exception as e:
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        AgentEvents.ERROR,
+                        session_id=session_id,
+                        content=f"Failed to restart task {task_id}: {e!s}",
+                    ),
+                )
+        else:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Agent does not support restart_solver_task"),
+            )
+
+    async def _handle_cancel_plan(
+        self,
+        websocket: WebSocketServerProtocol,
+        session_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        session = self.sessions.get(session_id)
+        if not session:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
+            )
+            return
+        agent = session.agent
+        if hasattr(agent, "cancel_plan"):
+            ok = await agent.cancel_plan()  # type: ignore[attr-defined]
+            await self._send_event(
+                websocket,
+                create_event(
+                    SystemEvents.NOTICE,
+                    session_id=session_id,
+                    content=("Plan cancellation requested" if ok else "No planning in progress"),
+                    metadata={"action": "cancel_plan", "ok": ok},
+                ),
+            )
+        else:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Agent does not support cancel_plan"),
+            )
+
+    async def _handle_replan(
+        self,
+        websocket: WebSocketServerProtocol,
+        session_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        session = self.sessions.get(session_id)
+        if not session:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
+            )
+            return
+        agent = session.agent
+        content = message.get("content") or {}
+        new_question = content.get("question") if isinstance(content, dict) else None
+        if hasattr(agent, "replan"):
+            ok = await agent.replan(new_question)  # type: ignore[attr-defined]
+            await self._send_event(
+                websocket,
+                create_event(
+                    SystemEvents.NOTICE,
+                    session_id=session_id,
+                    content=("Replan requested" if ok else "Replan request rejected"),
+                    metadata={"action": "replan", "ok": ok},
+                ),
+            )
+        else:
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Agent does not support replan"),
             )
 
     async def _cancel_session(self, session_id: str) -> None:

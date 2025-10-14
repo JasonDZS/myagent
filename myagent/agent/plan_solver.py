@@ -174,6 +174,13 @@ class PlanSolverPipeline:
         self.aggregator = aggregator
         self.concurrency = concurrency
         self.progress_callback = progress_callback
+        # Runtime management for per-task control
+        self._active_solver_tasks: dict[str, asyncio.Task] = {}
+        self._task_key_map: dict[str, Any] = {}
+        self._cancel_requests: set[str] = set()
+        self._restart_requests: set[str] = set()
+        self._results_map: dict[str, SolverRunResult] = {}
+        self._lock = asyncio.Lock()
 
     async def run(self, question: str) -> PlanSolveResult:
         """Execute the plan → solve pipeline for the provided question.
@@ -257,9 +264,14 @@ class PlanSolverPipeline:
     async def _run_solvers(
         self, tasks: Sequence[Any], context: PlanContext
     ) -> list[SolverRunResult]:
-        semaphore = (
-            asyncio.Semaphore(self.concurrency) if self.concurrency else None
-        )
+        """Run solvers with per-task cancel/restart support.
+
+        This implementation launches a task per slide and then waits
+        dynamically for completions, while allowing external cancellation
+        and restart requests to affect individual tasks without impacting
+        others.
+        """
+        semaphore = asyncio.Semaphore(self.concurrency) if self.concurrency else None
 
         async def _execute(task: Any) -> SolverRunResult:
             await self._notify("solver.start", {"task": task})
@@ -310,8 +322,149 @@ class PlanSolverPipeline:
                     return await _run()
             return await _run()
 
-        coroutines = [_execute(task) for task in tasks]
-        return await asyncio.gather(*coroutines)
+        # Helpers to bind keys
+        def _task_key(task: Any) -> str:
+            try:
+                tid = getattr(task, "id", None)
+                if tid is None and isinstance(task, dict):
+                    tid = task.get("id")
+                return f"task:{tid}" if tid is not None else f"task_obj:{id(task)}"
+            except Exception:
+                return f"task_obj:{id(task)}"
+
+        async def _launch(task: Any) -> None:
+            key = _task_key(task)
+            coro = _execute(task)
+            fut = asyncio.create_task(coro)
+            async with self._lock:
+                self._active_solver_tasks[key] = fut
+                self._task_key_map[key] = task
+
+        # Initialize
+        async with self._lock:
+            self._active_solver_tasks.clear()
+            self._task_key_map = { _task_key(t): t for t in tasks }
+            self._cancel_requests.clear()
+            self._restart_requests.clear()
+            self._results_map.clear()
+
+        for t in tasks:
+            await _launch(t)
+
+        # Dynamic wait loop
+        while True:
+            async with self._lock:
+                pending = list(self._active_solver_tasks.items())
+                restart_keys = list(self._restart_requests)
+
+            if not pending and not restart_keys:
+                break
+
+            # Schedule restarts that are requested but not active
+            for rkey in restart_keys:
+                async with self._lock:
+                    is_active = rkey in self._active_solver_tasks
+                    task_obj = self._task_key_map.get(rkey)
+                    if task_obj is None:
+                        # Unknown key; ignore
+                        self._restart_requests.discard(rkey)
+                        continue
+                if not is_active:
+                    await self._notify("solver.restarted", {"task": task_obj})
+                    await _launch(task_obj)
+                    async with self._lock:
+                        self._restart_requests.discard(rkey)
+
+            # Recompute pending set after possible launches
+            async with self._lock:
+                futures = list(self._active_solver_tasks.items())
+
+            if not futures:
+                continue
+
+            # Wait for any completion
+            done, _pending = await asyncio.wait(
+                {f for _, f in futures}, return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # Process completed
+            for done_fut in done:
+                # Find key by value
+                key_for_done = None
+                for k, f in futures:
+                    if f is done_fut:
+                        key_for_done = k
+                        break
+                if key_for_done is None:
+                    continue
+
+                async with self._lock:
+                    # Remove from active
+                    self._active_solver_tasks.pop(key_for_done, None)
+                    task_obj = self._task_key_map.get(key_for_done)
+
+                try:
+                    res: SolverRunResult = await done_fut
+                except asyncio.CancelledError:
+                    # Cancelled: emit event and continue; restart is handled above
+                    await self._notify("solver.cancelled", {"task": task_obj})
+                    continue
+                except Exception as exc:  # pragma: no cover - safeguard
+                    logger.error("Solver task failed for %s: %s", key_for_done, exc)
+                    continue
+
+                # Store successful result
+                async with self._lock:
+                    self._results_map[key_for_done] = res
+
+        # Collect results in original order (where available)
+        results: list[SolverRunResult] = []
+        for t in tasks:
+            key = _task_key(t)
+            res = self._results_map.get(key)
+            if res is not None:
+                results.append(res)
+        # Also include any restarted-only completions (if original was cancelled)
+        known_keys = { _task_key(t) for t in tasks }
+        for k, res in self._results_map.items():
+            if k not in known_keys:
+                results.append(res)
+
+        return results
+
+    # ---- External control API for per-task management ----
+    def _task_key(self, task: Any) -> str:
+        try:
+            tid = getattr(task, "id", None)
+            if tid is None and isinstance(task, dict):
+                tid = task.get("id")
+            return f"task:{tid}" if tid is not None else f"task_obj:{id(task)}"
+        except Exception:
+            return f"task_obj:{id(task)}"
+
+    async def request_cancel_solver_task(self, task_id: int | str) -> bool:
+        """Cancel a running solver task by id (slide id).
+
+        Returns True if a matching active task was found and cancelled.
+        """
+        # Build key candidates
+        key = f"task:{task_id}"
+        async with self._lock:
+            fut = self._active_solver_tasks.get(key)
+        if fut and not fut.done():
+            fut.cancel()
+            return True
+        return False
+
+    async def request_restart_solver_task(self, task_id: int | str) -> bool:
+        """Request a solver task to be restarted (cancel if running, then relaunch)."""
+        key = f"task:{task_id}"
+        async with self._lock:
+            self._restart_requests.add(key)
+            fut = self._active_solver_tasks.get(key)
+        if fut and not fut.done():
+            fut.cancel()
+        return True
 
     async def _run_aggregator(
         self, context: PlanContext, results: Sequence[SolverRunResult]
@@ -498,50 +651,83 @@ class PlanSolverSessionAgent(BaseAgent):
 
         self.state = AgentState.RUNNING
         self.pipeline.set_progress_callback(self._progress_callback)
+        # Internal control flags/state
+        self._planning_task: asyncio.Task | None = None
+        self._last_plan_confirm_step_id: str | None = None
+        self._replan_requested: bool = False
+        self._replan_question: str | None = None
+        self._solving_started: bool = False
 
         try:
             if not self.require_plan_confirmation:
+                # Simple mode: plan+solve in one shot
                 result = await self.pipeline.run(question)
                 summary = result.plan_summary or "Plan & Solve pipeline completed."
                 self.final_response = summary
                 return summary
 
-            # 1) Run planning only
-            context = await self.pipeline.plan(question)
-
-            # 2) Ask user to confirm/edit tasks via WebSocket and wait for response
-            edited_tasks, proceed = await self._await_plan_confirmation(context)
-            if not proceed:
-                summary = "Plan was declined by user."
-                self.final_response = summary
-                return summary
-
-            # 3) Build a new context with user-edited tasks if provided
-            if edited_tasks is not None:
+            # Plan/Confirm with replan support
+            context: PlanContext | None = None
+            while True:
+                # Launch planning as a task so it can be cancelled
+                plan_question = self._replan_question or question
+                self._planning_task = asyncio.create_task(self.pipeline.plan(plan_question))
                 try:
-                    edited_tasks = list(self.pipeline.planner.coerce_tasks(edited_tasks))
-                except Exception as exc:
-                    # If coercion fails, stop early with a clear final response
-                    await self._emit_event(
-                        "plan.coercion_error",
-                        {
-                            "message": "Failed to coerce edited tasks; aborting.",
-                            "error": str(exc),
-                        },
-                    )
-                    summary = f"Plan confirmation contained invalid tasks: {exc}"
+                    context = await self._planning_task
+                except asyncio.CancelledError:
+                    await self._emit_event(AgentEvents.PLAN_CANCELLED, {"reason": "cancelled"})
+                    if self._replan_requested:
+                        # Clear flag and re-run planning
+                        self._replan_requested = False
+                        # Keep any updated question across loops
+                        continue
+                    summary = "Plan was cancelled"
                     self.final_response = summary
                     return summary
-                context = PlanContext(
-                    name=context.name,
-                    question=context.question,
-                    tasks=edited_tasks,
-                    plan_summary=context.plan_summary,
-                    raw_plan_output=context.raw_plan_output,
-                    plan_statistics=context.plan_statistics,
-                )
+                finally:
+                    self._planning_task = None
 
-            # 4) Proceed to solver + aggregation
+                # Ask user to confirm/edit tasks
+                edited_tasks, proceed = await self._await_plan_confirmation(context)
+                if not proceed:
+                    summary = "Plan was declined by user."
+                    self.final_response = summary
+                    return summary
+
+                # If replan was requested during confirmation, loop to replan
+                if self._replan_requested:
+                    self._replan_requested = False
+                    continue
+
+                # Coerce edited tasks if provided
+                if edited_tasks is not None:
+                    try:
+                        edited_tasks = list(self.pipeline.planner.coerce_tasks(edited_tasks))
+                    except Exception as exc:
+                        await self._emit_event(
+                            "plan.coercion_error",
+                            {
+                                "message": "Failed to coerce edited tasks; aborting.",
+                                "error": str(exc),
+                            },
+                        )
+                        summary = f"Plan confirmation contained invalid tasks: {exc}"
+                        self.final_response = summary
+                        return summary
+                    context = PlanContext(
+                        name=context.name,
+                        question=context.question,
+                        tasks=edited_tasks,
+                        plan_summary=context.plan_summary,
+                        raw_plan_output=context.raw_plan_output,
+                        plan_statistics=context.plan_statistics,
+                    )
+
+                break  # Proceed to solver
+
+            # Proceed to solver + aggregation with per-task control
+            assert context is not None
+            self._solving_started = True
             result = await self.pipeline.solve_and_aggregate(context)
             summary = result.plan_summary or "Plan & Solve pipeline completed."
             self.final_response = summary
@@ -615,6 +801,7 @@ class PlanSolverSessionAgent(BaseAgent):
         import uuid
 
         step_id = f"confirm_plan_{uuid.uuid4().hex[:8]}"
+        self._last_plan_confirm_step_id = step_id
 
         # Emit a user confirmation request with full tasks as metadata
         try:
@@ -658,6 +845,52 @@ class PlanSolverSessionAgent(BaseAgent):
                 edited_tasks = maybe_tasks
 
         return edited_tasks, True
+
+    # ---- External control API exposed to WebSocket server ----
+    async def cancel_plan(self) -> bool:
+        """Cancel planning phase if in progress or awaiting confirmation."""
+        # If planning task is running, cancel it
+        if isinstance(self._planning_task, asyncio.Task) and not self._planning_task.done():
+            self._planning_task.cancel()
+            return True
+        # If awaiting confirmation, auto-decline to abort this run
+        session = get_ws_session_context()
+        if session and self._last_plan_confirm_step_id:
+            try:
+                await session.handle_user_response(self._last_plan_confirm_step_id, {"confirmed": False, "reason": "cancel_plan"})  # type: ignore[attr-defined]
+                return True
+            except Exception:
+                return False
+        return False
+
+    async def replan(self, question: str | None = None) -> bool:
+        """Request re-planning. Allowed only before solving starts."""
+        if self._solving_started:
+            # Replan not supported once solving has started
+            await self._emit_event(AgentEvents.ERROR, {"message": "Cannot replan after solving has started"})
+            return False
+        self._replan_requested = True
+        if question:
+            self._replan_question = str(question)
+        # Cancel current plan or decline confirmation to trigger loop
+        await self.cancel_plan()
+        return True
+
+    async def cancel_solver_task(self, task_id: int | str) -> bool:
+        if not self._solving_started:
+            return False
+        try:
+            return await self.pipeline.request_cancel_solver_task(task_id)
+        except Exception:
+            return False
+
+    async def restart_solver_task(self, task_id: int | str) -> bool:
+        if not self._solving_started:
+            return False
+        try:
+            return await self.pipeline.request_restart_solver_task(task_id)
+        except Exception:
+            return False
 
 
 def create_plan_solver_session_agent(

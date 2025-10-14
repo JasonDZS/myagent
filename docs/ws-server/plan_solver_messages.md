@@ -363,8 +363,8 @@ user.message (带 session_id)
 ├─ pipeline.completed
 ├─ agent.final_answer
 └─ agent.session_end
-```
-
+  ```
+  
 客户端按 `event` 订阅处理即可获取完整的执行过程与成果。若服务端启用了并发，多个 `solver.start` / `solver.completed` 可能交错出现，客户端应通过 `content.task.id` 区分。
 
 ### 7.1 含取消的序列（示例）
@@ -403,7 +403,52 @@ user.response (step_id 对应，confirmed=true，含编辑后的 tasks)
 
 若 `confirmed=false` 或超时，计划被拒绝，本次执行结束（收到 `agent.final_answer` 提示），会话仍可复用。
 
-## 8. 客户端辅助工具
+## 8. 细粒度控制：打断/重试（不影响其他任务）
+
+为满足“单页 PPT 可中断/重新生成，且不影响其他页”的需求，服务端扩展了如下用户事件与对应的 Agent 事件：
+
+- 用户事件：
+  - `user.cancel_task`：中断指定任务（单页 PPT）
+  - `user.restart_task`：重新生成指定任务（若正在生成则先中断再重启）
+  - `user.cancel_plan`：中断规划阶段（若处于规划或计划确认中）
+  - `user.replan`：在进入求解前请求重新规划（不允许在已开始求解后）
+
+- Agent 事件：
+  - `solver.cancelled`：某个任务被中断
+  - `solver.restarted`：某个任务被安排重启
+  - `plan.cancelled`：规划被中断
+
+使用方式：
+
+- 取消单页任务：
+  ```json
+  { "event": "user.cancel_task", "session_id": "<session_id>", "content": { "task_id": 2 } }
+  ```
+  成功后将收到 `system.notice` 确认，随后对应页会推送 `solver.cancelled`；其他页不受影响继续生成。
+
+- 重新生成单页任务：
+  ```json
+  { "event": "user.restart_task", "session_id": "<session_id>", "content": { "task_id": 2 } }
+  ```
+  服务端会先取消当前执行（若有），然后重新触发该页处理；会收到 `system.notice` 确认，并在稍后观察到该页新的 `solver.start` 与 `solver.completed`。
+
+- 中断规划：
+  ```json
+  { "event": "user.cancel_plan", "session_id": "<session_id>" }
+  ```
+  若此时处于规划/计划确认阶段将推送 `plan.cancelled`，当前流程结束；会话可复用重新发起。
+
+- 重新规划（仅限未开始求解前）：
+  ```json
+  { "event": "user.replan", "session_id": "<session_id>", "content": { "question": "<可选的新问题>" } }
+  ```
+  若允许，将立即取消当前规划/确认并重新进入 `plan.start`→`plan.completed` 流程；如已开始求解会返回错误提示。
+
+注意：
+- 重新生成单页任务不会阻塞其他任务；聚合阶段会在所有当期活动任务完成后执行。
+- 若取消了某些页且未重新生成，这些页将不会出现在后续聚合结果中。
+
+## 9. 客户端辅助工具
 
 内置测试脚本：`scripts/ws_print_messages.py`
 
@@ -423,4 +468,4 @@ user.response (step_id 对应，confirmed=true，含编辑后的 tasks)
  - 交互式确认并可选覆盖任务（运行时输入）：
    - `python scripts/ws_print_messages.py --host 127.0.0.1 --port 8086 --question "请根据数据生成PPT" --confirm-timeout 60`
 
-注意：示例服务已启用计划确认（`require_plan_confirmation=True`），确认超时 600 秒（`plan_confirmation_timeout=600`）。
+注意：示例服务已启用计划确认（`require_plan_confirmation=True`），确认超时 600 秒（`plan_confirmation_timeout=600`）。此外已支持 `user.cancel_task` / `user.restart_task` / `user.cancel_plan` / `user.replan` 事件以进行细粒度控制。

@@ -397,6 +397,7 @@ class Data2PPTPlanAgent(PlanAgent):
                 "5. When finished, use the terminate tool."
             ),
             max_steps=25,
+            max_observe=1500,
         )
 
     def extract_tasks(self, agent: Any, plan_output: str) -> Sequence[SlideTask]:
@@ -458,6 +459,7 @@ class Data2PPTSlideSolver(SolverAgent):
                 "6. When finished, use the terminate tool."
             ),
             max_steps=25,
+            max_observe=1500,
         )
 
     def build_request(self, task: SlideTask, *, context: PlanContext) -> str:

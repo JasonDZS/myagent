@@ -27,6 +27,10 @@ class UserEvents:
     MESSAGE = "user.message"
     RESPONSE = "user.response"
     CANCEL = "user.cancel"
+    CANCEL_TASK = "user.cancel_task"
+    RESTART_TASK = "user.restart_task"
+    CANCEL_PLAN = "user.cancel_plan"
+    REPLAN = "user.replan"
     CREATE_SESSION = "user.create_session"
     RECONNECT = "user.reconnect"
     RECONNECT_WITH_STATE = "user.reconnect_with_state"
@@ -50,6 +54,10 @@ class AgentEvents:
     LLM_MESSAGE = "agent.llm_message"
     STATE_EXPORTED = "agent.state_exported"
     STATE_RESTORED = "agent.state_restored"
+    # Extended plan/solver control events
+    PLAN_CANCELLED = "plan.cancelled"
+    SOLVER_CANCELLED = "solver.cancelled"
+    SOLVER_RESTARTED = "solver.restarted"
 
 
 class SystemEvents:
