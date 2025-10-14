@@ -25,6 +25,8 @@ class UserEvents:
     """User event types"""
 
     MESSAGE = "user.message"
+    # New: direct task submission to run solver without planning
+    SOLVE_TASKS = "user.solve_tasks"
     RESPONSE = "user.response"
     CANCEL = "user.cancel"
     CANCEL_TASK = "user.cancel_task"

@@ -31,6 +31,20 @@
   { "event": "user.message", "session_id": "<sid>", "content": "请根据数据生成多页PPT" }
   ```
 
+- 直接提交任务（跳过规划）：
+  ```json
+  {
+    "event": "user.solve_tasks",
+    "session_id": "<sid>",
+    "content": {
+      "tasks": [ { "id": 1, "title": "销售概览", "objective": "..." } ],
+      "question": "可选，问题背景",
+      "plan_summary": "可选，计划摘要标签"
+    }
+  }
+  ```
+  - 服务端不会发送 `plan.completed`、`aggregate.*`、`pipeline.completed`、`agent.final_answer`。仅推送每个任务的 `solver.start` 与 `solver.completed`。
+
 > 如需取消整次执行，可发送：`{ "event": "user.cancel", "session_id": "<sid>" }`
 
 ---
@@ -49,6 +63,9 @@
   - `solver.completed` → `{ "task": { ... }, "result": { "output": {...}, "summary": "...", "agent_name": "...", "statistics": { ... } } }`
   - 单页取消：`solver.cancelled`
   - 单页重启：`solver.restarted`（随后会出现该页新的 `solver.start`/`solver.completed`）
+
+- 直接任务模式：
+  - 客户端通过 `user.solve_tasks` 提交任务后，不发送 `plan.completed`，直接按求解与聚合事件流推送结果。
 
 - 聚合阶段：
   - `aggregate.start`

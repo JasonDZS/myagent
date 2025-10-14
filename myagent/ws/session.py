@@ -122,6 +122,58 @@ class AgentSession:
             self.state = "idle"
             self.current_task = None
 
+    async def execute_solve_tasks(
+        self,
+        tasks: list[dict] | dict | list | Any,
+        *,
+        question: str | None = None,
+        plan_summary: str | None = None,
+    ) -> None:
+        """Execute solver-only flow with client-provided tasks and stream updates."""
+        if self.state == "running":
+            await self._send_event(
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=self.session_id,
+                    content="Agent is currently running, please try again later",
+                )
+            )
+            return
+
+        # Must have an agent supporting solve_tasks
+        if not hasattr(self.agent, "solve_tasks"):
+            await self._send_event(
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=self.session_id,
+                    content="Agent does not support direct task solving",
+                )
+            )
+            return
+
+        self.state = "running"
+        self.step_counter = 0
+
+        try:
+            self.current_task = asyncio.create_task(
+                self._run_agent_solve_tasks(tasks, question=question, plan_summary=plan_summary)
+            )
+            await self.current_task
+        except asyncio.CancelledError:
+            logger.debug(f"Task cancelled for session {self.session_id}")
+        except Exception as e:
+            logger.error(f"Session {self.session_id} solve_tasks execution error: {e}")
+            await self._send_event(
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=self.session_id,
+                    content=f"Execution error: {e!s}",
+                )
+            )
+        finally:
+            self.state = "idle"
+            self.current_task = None
+
     async def _run_agent_with_streaming(self, user_input: str) -> None:
         """Run Agent and stream status updates, retrying on failure when configured."""
         total_attempts = self.max_retry_attempts + 1
@@ -130,6 +182,32 @@ class AgentSession:
         for attempt in range(1, total_attempts + 1):
             try:
                 await self._execute_agent_attempt(user_input, attempt, total_attempts)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - runtime safeguard
+                last_error = exc
+                if attempt == total_attempts:
+                    break
+                await self._handle_retry(attempt, total_attempts, exc)
+
+        if last_error:
+            raise last_error
+
+    async def _run_agent_solve_tasks(
+        self,
+        tasks: list[dict] | dict | list | Any,
+        *,
+        question: str | None = None,
+        plan_summary: str | None = None,
+    ) -> None:
+        """Run agent.solve_tasks with retries and streaming."""
+        total_attempts = self.max_retry_attempts + 1
+        last_error: Exception | None = None
+
+        for attempt in range(1, total_attempts + 1):
+            try:
+                await self._execute_agent_solve_tasks_attempt(tasks, attempt, total_attempts, question=question, plan_summary=plan_summary)
                 return
             except asyncio.CancelledError:
                 raise
@@ -228,6 +306,97 @@ class AgentSession:
         except Exception as e:
             logger.error(
                 "Agent execution error for session %s on attempt %s/%s: %s",
+                self.session_id,
+                attempt,
+                total_attempts,
+                e,
+            )
+            raise
+        finally:
+            # Clean up WebSocket session from context and agent
+            try:
+                from .context import clear_ws_session_context
+
+                clear_ws_session_context()
+                self.agent.ws_session = None
+                logger.debug("Cleaned up WebSocket session")
+            except Exception as e:  # pragma: no cover - best effort
+                logger.debug(f"Could not clean up WebSocket session: {e}")
+
+    async def _execute_agent_solve_tasks_attempt(
+        self,
+        tasks: list[dict] | dict | list | Any,
+        attempt: int,
+        total_attempts: int,
+        *,
+        question: str | None = None,
+        plan_summary: str | None = None,
+    ) -> None:
+        """Execute a single attempt of solve_tasks and stream final answer."""
+        try:
+            if self.agent.state in (AgentState.FINISHED, AgentState.ERROR):
+                logger.info(
+                    "Resetting agent state from %s to IDLE for session %s before attempt %s/%s",
+                    self.agent.state,
+                    self.session_id,
+                    attempt,
+                    total_attempts,
+                )
+                self.agent.state = AgentState.IDLE
+                self.agent.current_step = 0
+
+                memory = getattr(self.agent, "memory", None)
+                if memory:
+                    messages_before = len(getattr(memory, "messages", []))
+                    try:
+                        memory.clean_incomplete_tool_calls()
+                    except Exception as clean_exc:  # pragma: no cover - best effort
+                        logger.debug(
+                            "Failed to clean incomplete tool calls for session %s: %s",
+                            self.session_id,
+                            clean_exc,
+                        )
+                    else:
+                        messages_after = len(getattr(memory, "messages", []))
+                        logger.info(
+                            "Cleaned incomplete tool_calls from agent memory for session %s: %s -> %s messages",
+                            self.session_id,
+                            messages_before,
+                            messages_after,
+                        )
+
+            # Monitor Agent tool calls only once per tool collection
+            self._wrap_tool_calls()
+
+            # Ensure final response is fresh for this attempt
+            if hasattr(self.agent, "final_response"):
+                self.agent.final_response = None
+
+            # Set WebSocket session in context and agent for streaming support
+            try:
+                from .context import set_ws_session_context
+
+                set_ws_session_context(self)
+                self.agent.ws_session = self
+                logger.info(
+                    "Set WebSocket session for agent: session_id=%s (attempt %s/%s)",
+                    self.session_id,
+                    attempt,
+                    total_attempts,
+                )
+            except Exception as e:  # pragma: no cover - runtime safeguard
+                logger.error(f"Could not set WebSocket session: {e}")
+
+            # Execute solve_tasks on agent (direct-task mode)
+            if hasattr(self.agent, "solve_tasks"):
+                result = await self.agent.solve_tasks(tasks, question=question, plan_summary=plan_summary)  # type: ignore[attr-defined]
+            else:
+                raise AttributeError("Agent does not implement solve_tasks")
+            # Do not send agent.final_answer in direct-task mode; solver.* events suffice
+
+        except Exception as e:
+            logger.error(
+                "Agent solve_tasks error for session %s on attempt %s/%s: %s",
                 self.session_id,
                 attempt,
                 total_attempts,

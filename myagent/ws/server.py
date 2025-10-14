@@ -124,32 +124,39 @@ class AgentWebSocketServer:
             logger.info(f"Handling MESSAGE event for session {session_id}")
             # Execute asynchronously, don't block message handling loop
             message_task = asyncio.create_task(
-                self._handle_user_message(websocket, session_id, message)
+                self._handle_user_message(websocket, connection_id, session_id, message)
+            )
+        
+        elif event_type == UserEvents.SOLVE_TASKS and session_id:
+            logger.info(f"Handling SOLVE_TASKS event for session {session_id}")
+            # Execute asynchronously, don't block message handling loop
+            asyncio.create_task(
+                self._handle_user_solve_tasks(websocket, connection_id, session_id, message)
             )
 
         elif event_type == UserEvents.RESPONSE and session_id:
             logger.info(f"Handling RESPONSE event for session {session_id}")
-            await self._handle_user_response(websocket, session_id, message)
+            await self._handle_user_response(websocket, connection_id, session_id, message)
 
         elif event_type == UserEvents.CANCEL and session_id:
             logger.info(f"Handling CANCEL event for session {session_id}")
-            await self._cancel_session(session_id)
+            await self._cancel_session(connection_id, session_id)
 
         elif event_type == UserEvents.CANCEL_TASK and session_id:
             logger.info(f"Handling CANCEL_TASK event for session {session_id}")
-            await self._handle_cancel_task(websocket, session_id, message)
+            await self._handle_cancel_task(websocket, connection_id, session_id, message)
 
         elif event_type == UserEvents.RESTART_TASK and session_id:
             logger.info(f"Handling RESTART_TASK event for session {session_id}")
-            await self._handle_restart_task(websocket, session_id, message)
+            await self._handle_restart_task(websocket, connection_id, session_id, message)
 
         elif event_type == UserEvents.CANCEL_PLAN and session_id:
             logger.info(f"Handling CANCEL_PLAN event for session {session_id}")
-            await self._handle_cancel_plan(websocket, session_id, message)
+            await self._handle_cancel_plan(websocket, connection_id, session_id, message)
 
         elif event_type == UserEvents.REPLAN and session_id:
             logger.info(f"Handling REPLAN event for session {session_id}")
-            await self._handle_replan(websocket, session_id, message)
+            await self._handle_replan(websocket, connection_id, session_id, message)
 
         elif event_type == UserEvents.RECONNECT_WITH_STATE:
             logger.info("Handling RECONNECT_WITH_STATE event")
@@ -157,15 +164,15 @@ class AgentWebSocketServer:
 
         elif event_type == UserEvents.REQUEST_STATE and session_id:
             logger.info(f"Handling REQUEST_STATE event for session {session_id}")
-            await self._handle_request_state(websocket, session_id, message)
+            await self._handle_request_state(websocket, connection_id, session_id, message)
 
         else:
             logger.warning(
                 f"Unknown event type or missing session_id: event={event_type}, session_id={session_id}"
             )
             logger.warning(
-                f"Available event types: CREATE_SESSION={UserEvents.CREATE_SESSION}, MESSAGE={UserEvents.MESSAGE}, "
-                f"RESPONSE={UserEvents.RESPONSE}, CANCEL={UserEvents.CANCEL}, "
+                f"Available: CREATE_SESSION={UserEvents.CREATE_SESSION}, MESSAGE={UserEvents.MESSAGE}, "
+                f"SOLVE_TASKS={UserEvents.SOLVE_TASKS}, RESPONSE={UserEvents.RESPONSE}, CANCEL={UserEvents.CANCEL}, "
                 f"RECONNECT_WITH_STATE={UserEvents.RECONNECT_WITH_STATE}, REQUEST_STATE={UserEvents.REQUEST_STATE}"
             )
             await self._send_event(
@@ -233,6 +240,7 @@ class AgentWebSocketServer:
     async def _handle_user_message(
         self,
         websocket: WebSocketServerProtocol,
+        connection_id: str,
         session_id: str,
         message: dict[str, Any],
     ) -> None:
@@ -245,6 +253,21 @@ class AgentWebSocketServer:
                     AgentEvents.ERROR,
                     session_id=session_id,
                     content="Session not found",
+                ),
+            )
+            return
+
+        # Enforce session-connection binding
+        if session.connection_id != connection_id:
+            logger.warning(
+                f"Session ownership mismatch for MESSAGE: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session does not belong to this connection",
                 ),
             )
             return
@@ -293,9 +316,94 @@ class AgentWebSocketServer:
             except Exception as send_error:
                 logger.error(f"Failed to send error event: {send_error}")
 
+    async def _handle_user_solve_tasks(
+        self,
+        websocket: WebSocketServerProtocol,
+        connection_id: str,
+        session_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        """Handle client-provided tasks to run solver directly (bypassing planner)."""
+        session = self.sessions.get(session_id)
+        if not session:
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session not found",
+                ),
+            )
+            return
+
+        # Enforce session-connection binding
+        if session.connection_id != connection_id:
+            logger.warning(
+                f"Session ownership mismatch for SOLVE_TASKS: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session does not belong to this connection",
+                ),
+            )
+            return
+
+        if not session.is_active():
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session is closed",
+                ),
+            )
+            return
+
+        content = message.get("content") or {}
+        tasks = None
+        question = None
+        plan_summary = None
+        if isinstance(content, dict):
+            tasks = content.get("tasks", None)
+            question = content.get("question", None)
+            plan_summary = content.get("plan_summary", None)
+        else:
+            tasks = content
+
+        if tasks is None:
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Missing tasks in user.solve_tasks content",
+                ),
+            )
+            return
+
+        try:
+            await session.execute_solve_tasks(tasks, question=question, plan_summary=plan_summary)
+        except Exception as e:
+            logger.error(f"Error executing solve_tasks for session {session_id}: {e}")
+            try:
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        AgentEvents.ERROR,
+                        session_id=session_id,
+                        content=f"solve_tasks execution error: {e!s}",
+                    ),
+                )
+            except Exception as send_error:
+                logger.error(f"Failed to send error event: {send_error}")
+
     async def _handle_user_response(
         self,
         websocket: WebSocketServerProtocol,
+        connection_id: str,
         session_id: str,
         message: dict[str, Any],
     ) -> None:
@@ -309,6 +417,21 @@ class AgentWebSocketServer:
                     AgentEvents.ERROR,
                     session_id=session_id,
                     content="Session not found",
+                ),
+            )
+            return
+
+        # Enforce session-connection binding
+        if session.connection_id != connection_id:
+            logger.warning(
+                f"Session ownership mismatch for RESPONSE: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session does not belong to this connection",
                 ),
             )
             return
@@ -346,6 +469,7 @@ class AgentWebSocketServer:
     async def _handle_cancel_task(
         self,
         websocket: WebSocketServerProtocol,
+        connection_id: str,
         session_id: str,
         message: dict[str, Any],
     ) -> None:
@@ -354,6 +478,17 @@ class AgentWebSocketServer:
             await self._send_event(
                 websocket,
                 create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
+            )
+            return
+
+        # Enforce session-connection binding
+        if session.connection_id != connection_id:
+            logger.warning(
+                f"Session ownership mismatch for CANCEL_TASK: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Session does not belong to this connection"),
             )
             return
         content = message.get("content") or {}
@@ -397,6 +532,7 @@ class AgentWebSocketServer:
     async def _handle_restart_task(
         self,
         websocket: WebSocketServerProtocol,
+        connection_id: str,
         session_id: str,
         message: dict[str, Any],
     ) -> None:
@@ -405,6 +541,17 @@ class AgentWebSocketServer:
             await self._send_event(
                 websocket,
                 create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
+            )
+            return
+
+        # Enforce session-connection binding
+        if session.connection_id != connection_id:
+            logger.warning(
+                f"Session ownership mismatch for RESTART_TASK: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Session does not belong to this connection"),
             )
             return
         content = message.get("content") or {}
@@ -446,6 +593,7 @@ class AgentWebSocketServer:
     async def _handle_cancel_plan(
         self,
         websocket: WebSocketServerProtocol,
+        connection_id: str,
         session_id: str,
         message: dict[str, Any],
     ) -> None:
@@ -454,6 +602,16 @@ class AgentWebSocketServer:
             await self._send_event(
                 websocket,
                 create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
+            )
+            return
+        # Enforce session-connection binding
+        if session.connection_id != connection_id:
+            logger.warning(
+                f"Session ownership mismatch for CANCEL_PLAN: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Session does not belong to this connection"),
             )
             return
         agent = session.agent
@@ -477,6 +635,7 @@ class AgentWebSocketServer:
     async def _handle_replan(
         self,
         websocket: WebSocketServerProtocol,
+        connection_id: str,
         session_id: str,
         message: dict[str, Any],
     ) -> None:
@@ -485,6 +644,16 @@ class AgentWebSocketServer:
             await self._send_event(
                 websocket,
                 create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
+            )
+            return
+        # Enforce session-connection binding
+        if session.connection_id != connection_id:
+            logger.warning(
+                f"Session ownership mismatch for REPLAN: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+            )
+            await self._send_event(
+                websocket,
+                create_event(AgentEvents.ERROR, session_id=session_id, content="Session does not belong to this connection"),
             )
             return
         agent = session.agent
@@ -550,12 +719,20 @@ class AgentWebSocketServer:
             ),
         )
 
-    async def _cancel_session(self, session_id: str) -> None:
+    async def _cancel_session(self, connection_id: str, session_id: str) -> None:
         """Cancel session execution"""
         session = self.sessions.get(session_id)
-        if session:
-            await session.cancel()
-            logger.info(f"Cancelled session {session_id}")
+        if not session:
+            logger.warning(f"Cancel requested for non-existent session {session_id}")
+            return
+        # Enforce session-connection binding
+        if session.connection_id != connection_id:
+            logger.warning(
+                f"Session ownership mismatch for CANCEL: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+            )
+            return
+        await session.cancel()
+        logger.info(f"Cancelled session {session_id}")
 
     async def _cleanup_connection(self, connection_id: str) -> None:
         """Clean up connection and related sessions"""
@@ -809,6 +986,7 @@ class AgentWebSocketServer:
     async def _handle_request_state(
         self,
         websocket: WebSocketServerProtocol,
+        connection_id: str,
         session_id: str,
         message: dict[str, Any],
     ) -> None:
@@ -822,6 +1000,21 @@ class AgentWebSocketServer:
                         AgentEvents.ERROR,
                         session_id=session_id,
                         content="Session not found",
+                    ),
+                )
+                return
+
+            # Enforce session-connection binding
+            if session.connection_id != connection_id:
+                logger.warning(
+                    f"Session ownership mismatch for REQUEST_STATE: session={session_id} belongs to {session.connection_id}, got {connection_id}"
+                )
+                await self._send_event(
+                    websocket,
+                    create_event(
+                        AgentEvents.ERROR,
+                        session_id=session_id,
+                        content="Session does not belong to this connection",
                     ),
                 )
                 return

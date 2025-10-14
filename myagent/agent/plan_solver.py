@@ -771,7 +771,10 @@ class PlanSolverSessionAgent(BaseAgent):
         else:
             event_type = event
         session_id = getattr(session, "session_id", None)
-        ws_event = create_event(event_type, session_id=session_id, content=content, metadata=metadata, step_id=step_id)
+        # Ensure payloads are JSON-serializable
+        serial_content = self._make_serializable(content)
+        serial_metadata = self._make_serializable(metadata) if metadata is not None else None
+        ws_event = create_event(event_type, session_id=session_id, content=serial_content, metadata=serial_metadata, step_id=step_id)
 
         if hasattr(session, "_send_event"):
             await session._send_event(ws_event)  # type: ignore[attr-defined]
@@ -861,6 +864,86 @@ class PlanSolverSessionAgent(BaseAgent):
         return edited_tasks, True
 
     # ---- External control API exposed to WebSocket server ----
+    async def solve_tasks(
+        self,
+        tasks: list[Any] | Any,
+        *,
+        question: str | None = None,
+        plan_summary: str | None = None,
+    ) -> str:
+        """Run solver-only flow using client-provided tasks, bypassing planning.
+
+        Direct-task mode emits only solver.start/solver.completed events; it does
+        not emit plan.completed, aggregate.*, pipeline.completed, or final_answer.
+        """
+        # Normalize tasks to a list
+        raw_tasks: list[Any]
+        if isinstance(tasks, list):
+            raw_tasks = tasks
+        else:
+            raw_tasks = [tasks]
+
+        if not raw_tasks:
+            raise ValueError("solve_tasks requires at least one task")
+
+        # Allow re-use after completion
+        if self.state not in (AgentState.IDLE, AgentState.FINISHED):
+            raise RuntimeError(f"Cannot run agent from state: {self.state}")
+
+        # Coerce tasks to the planner's expected type if supported
+        try:
+            coerced_tasks = list(self.pipeline.planner.coerce_tasks(raw_tasks))
+        except Exception as exc:
+            await self._emit_event(
+                "plan.coercion_error",
+                {
+                    "message": "Failed to coerce client-provided tasks; aborting.",
+                    "error": str(exc),
+                },
+            )
+            raise
+
+        # Build a minimal context
+        q = (question or "Direct task execution").strip()
+        psummary = plan_summary or "Tasks provided by client"
+        context = PlanContext(
+            name=self.pipeline.name,
+            question=q,
+            tasks=coerced_tasks,
+            plan_summary=psummary,
+            raw_plan_output=None,
+            plan_statistics=None,
+        )
+
+        # Transition to RUNNING and attach progress callback
+        self.state = AgentState.RUNNING
+        # Only forward solver.* events via the standard progress callback
+        self.pipeline.set_progress_callback(self._progress_callback)
+        self._solving_started = True
+
+        try:
+            # Run solvers only; do not aggregate or emit pipeline-level events
+            results = await self.pipeline._run_solvers(coerced_tasks, context)  # type: ignore[attr-defined]
+
+            # Cache for potential restart support
+            self._last_context = context
+            try:
+                self._last_solver_results = list(result.solver_results)
+            except Exception:
+                self._last_solver_results = []
+
+            # Cache last context and results (for potential restarts)
+            self._last_context = context
+            try:
+                self._last_solver_results = list(results)
+            except Exception:
+                self._last_solver_results = []
+            # Do not emit final answer; return a simple status string
+            return "OK"
+        finally:
+            self.pipeline.set_progress_callback(None)
+            self.state = AgentState.FINISHED
+
     async def cancel_plan(self) -> bool:
         """Cancel planning phase if in progress or awaiting confirmation."""
         # If planning task is running, cancel it

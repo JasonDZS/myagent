@@ -25,6 +25,9 @@ def _json_dumps(payload: dict[str, Any]) -> str:
 async def run_client(
     url: str,
     question: Optional[str],
+    solve_tasks: Optional[Any],
+    solve_question: Optional[str],
+    solve_plan_summary: Optional[str],
     keep_alive: bool,
     cancel_after: Optional[float],
     auto_confirm_plan: bool,
@@ -45,6 +48,15 @@ async def run_client(
 
         session_id: str | None = None
         cancel_task: asyncio.Task | None = None
+
+        # Expected solver.completed count in direct-task mode (for auto-exit)
+        expected_solver_completeds: Optional[int] = None
+        if isinstance(solve_tasks, list):
+            expected_solver_completeds = len(solve_tasks)
+        elif isinstance(solve_tasks, dict):
+            expected_solver_completeds = 1
+
+        seen_solver_completeds = 0
 
         try:
             while True:
@@ -72,8 +84,35 @@ async def run_client(
                     session_id = message.get("session_id")
                     print(f"📌 Session established: {session_id}")
 
-                    # Optionally send question immediately
-                    if question:
+                    # Optionally send direct tasks (takes precedence over question)
+                    if solve_tasks is not None:
+                        payload: dict[str, Any]
+                        if isinstance(solve_tasks, (list, dict)):
+                            content: Any
+                            if isinstance(solve_tasks, list) or isinstance(solve_tasks, dict):
+                                content = {"tasks": solve_tasks}
+                            else:
+                                content = {"tasks": [solve_tasks]}
+                            if solve_question:
+                                content["question"] = solve_question
+                            if solve_plan_summary:
+                                content["plan_summary"] = solve_plan_summary
+                            payload = {
+                                "event": "user.solve_tasks",
+                                "session_id": session_id,
+                                "content": content,
+                            }
+                        else:
+                            # Fallback: try to send as-is (string JSON?)
+                            payload = {
+                                "event": "user.solve_tasks",
+                                "session_id": session_id,
+                                "content": solve_tasks,
+                            }
+                        await websocket.send(_json_dumps(payload))
+                        print("--> Sent user.solve_tasks")
+                    elif question:
+                        # Otherwise send question to trigger plan→solve
                         await websocket.send(
                             _json_dumps(
                                 {
@@ -104,13 +143,17 @@ async def run_client(
 
                         cancel_task = asyncio.create_task(_schedule_cancel(cancel_after, session_id))
 
-                elif (
-                    not keep_alive
-                    and session_id
-                    and event_type in {"agent.final_answer", "agent.session_end", "agent.interrupted"}
-                ):
-                    print("🛑 Terminal event received. Closing connection.")
-                    break
+                elif not keep_alive and session_id:
+                    # In direct-task mode, close after expected solver.completed count
+                    if event_type == "solver.completed" and expected_solver_completeds:
+                        seen_solver_completeds += 1
+                        if seen_solver_completeds >= expected_solver_completeds:
+                            print("🛑 All solver.completed received. Closing connection.")
+                            break
+                    # In standard mode, close on final/ended/interrupted
+                    elif event_type in {"agent.final_answer", "agent.session_end", "agent.interrupted"}:
+                        print("🛑 Terminal event received. Closing connection.")
+                        break
 
                 # Handle confirmation prompts
                 if event_type == "agent.user_confirm" and session_id:
@@ -273,6 +316,21 @@ def main() -> None:
         help="Optional question to send automatically after session creation.",
     )
     parser.add_argument(
+        "--solve-tasks-file",
+        default=None,
+        help="JSON file containing tasks (list or single object) for user.solve_tasks to bypass planning.",
+    )
+    parser.add_argument(
+        "--solve-question",
+        default=None,
+        help="Optional question/background to include in user.solve_tasks content.",
+    )
+    parser.add_argument(
+        "--solve-plan-summary",
+        default=None,
+        help="Optional plan_summary label to include in user.solve_tasks content.",
+    )
+    parser.add_argument(
         "--keep-alive",
         action="store_true",
         help="Keep connection open after receiving final answer.",
@@ -327,6 +385,20 @@ def main() -> None:
         except Exception as exc:
             print(f"⚠️  Failed to load --confirm-plan-tasks-file: {exc}")
 
+    # Prepare optional direct solve tasks
+    solve_tasks = None
+    if args.solve_tasks_file:
+        try:
+            with open(args.solve_tasks_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Accept list or object
+            if isinstance(data, (list, dict)):
+                solve_tasks = data
+            else:
+                print("⚠️  --solve-tasks-file must contain a JSON list or object; ignoring.")
+        except Exception as exc:
+            print(f"⚠️  Failed to load --solve-tasks-file: {exc}")
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, loop.stop)
@@ -342,6 +414,9 @@ def main() -> None:
             run_client(
                 url=url,
                 question=args.question,
+                solve_tasks=solve_tasks,
+                solve_question=args.solve_question,
+                solve_plan_summary=args.solve_plan_summary,
                 keep_alive=args.keep_alive,
                 cancel_after=args.cancel_after,
                 auto_confirm_plan=args.auto_confirm_plan,
