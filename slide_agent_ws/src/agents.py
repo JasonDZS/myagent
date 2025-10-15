@@ -6,7 +6,7 @@ from myagent import create_react_agent
 from myagent.agent import PlanAgent, SolverAgent, PlanContext, SolverRunResult
 
 # Reuse database tools from the examples module to avoid duplication
-from examples.data2ppt import (
+from .data2ppt import (
     DatabaseQueryTool,
     DatabaseSchemaTool,
     GeneratePPTTool,

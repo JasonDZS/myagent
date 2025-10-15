@@ -1,0 +1,13 @@
+[project]
+name = "slide-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "myagent",
+    "pymysql>=1.1.2",
+]
+
+[tool.uv.sources]
+myagent = { git = "https://github.com/JasonDZS/myagent.git", rev = "v0.1.2" }

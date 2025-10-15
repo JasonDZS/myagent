@@ -28,7 +28,7 @@
 1) 准备数据库环境变量（二选一）：
 
 - SQLite：
-  - `DB_TYPE=sqlite`
+ - `DB_TYPE=sqlite`
   - `SQLITE_DATABASE=./data/your.sqlite`
 - MySQL：
   - `DB_TYPE=mysql`
@@ -37,6 +37,10 @@
   - `MYSQL_PASSWORD=...`
   - `MYSQL_DATABASE=...`
   - 可选：`MYSQL_PORT`、`MYSQL_CHARSET`
+ - API（调用后端 DuckDB SQL 接口）：
+   - `DB_TYPE=api`
+   - `API_BASE_URL=http://127.0.0.1:2818/api`
+   - 会话创建时可通过 `user.create_session` 传入：`dataset_id`、`token`（JWT）与可选 `scheme`（默认 Bearer）；也可在环境设置 `API_DATASET_ID`、`API_AUTH_TOKEN`、`API_AUTH_SCHEME`。
 
 2) 启动 WebSocket 服务：
 

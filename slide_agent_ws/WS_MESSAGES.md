@@ -28,6 +28,28 @@
     "timestamp": "..."
   }
   ```
+
+  可选（DB_TYPE=api 时）：在创建会话时一起传入数据集与鉴权信息，服务端会为本会话配置 API 连接（DuckDB SQL）：
+  ```json
+  {
+    "event": "user.create_session",
+    "content": {
+      "api": {
+        "dataset_id": 123,
+        "token": "<jwt>",
+        "scheme": "Bearer",
+        "base_url": "http://127.0.0.1:2818/api"
+      }
+    }
+  }
+  ```
+  等效的扁平结构也支持：
+  ```json
+  {
+    "event": "user.create_session",
+    "content": { "dataset_id": 123, "token": "<jwt>", "api_base_url": "http://127.0.0.1:2818/api" }
+  }
+  ```
 - 提交问题（触发执行）：
   ```json
   { "event": "user.message", "session_id": "<sid>", "content": "请根据数据生成多页PPT" }
