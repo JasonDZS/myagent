@@ -31,13 +31,13 @@ except Exception:  # pragma: no cover
     from myagent.ws import AgentWebSocketServer
 
 try:
-    from .pipeline import build_pipeline
+    from src.pipeline import build_pipeline
 except Exception:  # pragma: no cover
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from template_agent.pipeline import build_pipeline
+    from src.pipeline import build_pipeline
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
