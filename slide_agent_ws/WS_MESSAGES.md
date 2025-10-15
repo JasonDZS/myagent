@@ -11,6 +11,8 @@
 
 ## 1. 连接与会话
 
+- 启动示例服务：`python examples/plan_solve_data2ppt_ws.py --host 0.0.0.0 --port 8086`（客户端连接请使用具体 IP，`0.0.0.0` 仅用于监听）
+
 - 连接：`ws://<host>:<port>`
 - 创建会话：
   ```json
@@ -65,7 +67,7 @@
   - 单页重启：`solver.restarted`（随后会出现该页新的 `solver.start`/`solver.completed`）
 
 - 直接任务模式：
-  - 客户端通过 `user.solve_tasks` 提交任务后，不发送 `plan.completed`，直接按求解与聚合事件流推送结果。
+  - 客户端通过 `user.solve_tasks` 提交任务后，服务端不会发送 `plan.completed`、`aggregate.*`、`pipeline.completed`、`agent.final_answer`，仅按每个任务推送 `solver.start` 与 `solver.completed`。
 
 - 聚合阶段：
   - `aggregate.start`
@@ -115,6 +117,10 @@
   ```
 
 超时或拒绝将结束本次执行（会有 `agent.final_answer` 提示）。
+
+备注：
+- 服务端会尝试将字典任务“类型转换”（coerce）为内部任务对象（如 SlideTask）；若失败，将推送 `plan.coercion_error` 并终止本次执行。
+- 确认超时：示例服务默认 600 秒（可按需调整）。
 
 ---
 
@@ -216,6 +222,17 @@ user.cancel_task (task_id=2)
 └─ solver.cancelled (task 2)
 ```
 
+直接任务模式：
+```
+user.create_session
+└─ agent.session_created
+user.solve_tasks (含 tasks)
+├─ solver.start (task 1)
+├─ solver.completed (task 1)
+├─ solver.start (task 2)
+└─ solver.completed (task 2)
+```
+
 ---
 
 ## 7. 约定与注意事项
@@ -302,3 +319,49 @@ sequenceDiagram
         end
     end
 ```
+
+---
+
+## 9. 错误与取消
+
+- `agent.error`：执行异常
+- `agent.timeout`：超时或步数耗尽
+- `agent.interrupted`：收到 `user.cancel` 后中断
+- `system.error`：协议层错误（如 JSON 解析失败）
+
+整次中断（用户取消）：
+```json
+{ "event": "user.cancel", "session_id": "<sid>" }
+```
+服务端会取消当前执行、清理未完成 tool_calls、重置 Agent 状态，并推送 `agent.interrupted`。会话不关闭，可复用。
+
+---
+
+## 10. 统计信息
+
+- 规划统计（`plan.completed.statistics`）：记录模型、请求次数与累计 token；即便 `broadcast_tasks=false` 时仍会包含统计与 `plan_summary`。
+
+- 全流程统计（`pipeline.completed.statistics`）示例：
+```json
+{
+  "plan": { "total_calls": 1, "total_input_tokens": 700, "total_output_tokens": 350, "total_tokens": 1050 },
+  "solvers": [ { "task": { "id": 1, "title": "..." }, "agent_name": "...", "statistics": { "total_calls": 2, "total_input_tokens": 684, "total_output_tokens": 412, "total_tokens": 1096 } } ],
+  "totals": { "total_calls": 5, "total_input_tokens": 1580, "total_output_tokens": 920, "total_tokens": 2500 },
+  "calls": [ { "origin": "plan" }, { "origin": "solver" } ]
+}
+```
+
+---
+
+## 11. 辅助脚本
+
+- 打印消息脚本：`scripts/ws_print_messages.py`
+  - 自动取消：`--cancel-after <seconds>`
+  - 自动确认计划：`--auto-confirm-plan`
+  - 覆盖任务：`--confirm-plan-tasks-file <file>`（与 `--auto-confirm-plan` 搭配）
+  - 交互式确认：默认开启，可用 `--no-interactive-confirm` 禁用；`--confirm-timeout <seconds>` 设置超时
+
+示例：
+- 启动示例服务：`python examples/plan_solve_data2ppt_ws.py --host 0.0.0.0 --port 8086`
+- 自动同意计划：`python scripts/ws_print_messages.py --host 127.0.0.1 --port 8086 --question "请根据数据生成PPT" --auto-confirm-plan`
+- 自动同意并覆盖任务：`python scripts/ws_print_messages.py --host 127.0.0.1 --port 8086 --question "请根据数据生成PPT" --auto-confirm-plan --confirm-plan-tasks-file ./my_tasks.json`
