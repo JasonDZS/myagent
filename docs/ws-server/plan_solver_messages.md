@@ -253,19 +253,3 @@ user.solve_tasks (含 tasks)
 ```
 
 ---
-
-## 10. 辅助脚本
-
-脚本：`scripts/ws_print_messages.py`
-
-- 自动取消：`--cancel-after <seconds>`
-- 自动确认计划：`--auto-confirm-plan`
-- 覆盖任务：`--confirm-plan-tasks-file <file>`（与 `--auto-confirm-plan` 搭配）
-- 交互式确认：默认开启，可用 `--no-interactive-confirm` 禁用；`--confirm-timeout <seconds>` 设置超时
-
-示例：
-- 启动示例服务：`python examples/plan_solve_data2ppt_ws.py --host 0.0.0.0 --port 8086`
-- 自动同意计划：`python scripts/ws_print_messages.py --host 127.0.0.1 --port 8086 --question "请根据数据生成PPT" --auto-confirm-plan`
-- 自动同意并覆盖任务：`python scripts/ws_print_messages.py --host 127.0.0.1 --port 8086 --question "请根据数据生成PPT" --auto-confirm-plan --confirm-plan-tasks-file ./my_tasks.json`
-
-配置提示：示例服务启用计划确认（`require_plan_confirmation=True`），确认超时 600 秒（`plan_confirmation_timeout=600`）。服务端也支持 `user.cancel_task` / `user.restart_task` / `user.cancel_plan` / `user.replan` 与 `user.solve_tasks`。
