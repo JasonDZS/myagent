@@ -37,6 +37,8 @@ class UserEvents:
     RECONNECT = "user.reconnect"
     RECONNECT_WITH_STATE = "user.reconnect_with_state"
     REQUEST_STATE = "user.request_state"
+    # Client acknowledgement of received events (carry last_seq)
+    ACK = "user.ack"
 
 
 class AgentEvents:

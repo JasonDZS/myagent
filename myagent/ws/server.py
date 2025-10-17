@@ -5,6 +5,7 @@ import contextlib
 import json
 import uuid
 from collections.abc import Callable
+from collections import deque
 from datetime import datetime
 from typing import Any
 
@@ -24,23 +25,37 @@ from .state_manager import StateManager
 from .utils import close_websocket_safely
 from .utils import is_websocket_closed
 from .utils import send_websocket_message
+from .outbound import OutboundChannel
 
 
 class AgentWebSocketServer:
-    """MyAgent WebSocket server"""
+    """MyAgent WebSocket server.
+
+    Design goals:
+    - Single-writer outbound per connection (prevents concurrent sends)
+    - Clear session/connection validation helpers
+    - Bounded buffers for replay across reconnects
+    - Defensive error handling and concise logs
+    """
 
     def __init__(
         self,
         agent_factory_func: Callable[[], BaseAgent],
         host: str = "localhost",
         port: int = 8080,
-        state_secret_key: str = None,
+        state_secret_key: str | None = None,
     ):
         self.agent_factory_func = agent_factory_func
         self.host = host
         self.port = port
         self.sessions: dict[str, AgentSession] = {}
         self.connections: dict[str, WebSocketServerProtocol] = {}
+        self.outbounds: dict[str, OutboundChannel] = {}
+        self.sequences: dict[str, int] = {}
+        self.last_ack: dict[str, int] = {}
+        self.buffers: dict[str, deque[tuple[int, dict[str, Any]]]] = {}
+        # Per-session event history for replay across reconnects
+        self.session_buffers: dict[str, deque[dict[str, Any]]] = {}
         self.running = False
         self.shutdown_event = asyncio.Event()
         
@@ -50,6 +65,18 @@ class AgentWebSocketServer:
             state_secret_key = secrets.token_hex(32)
             logger.warning("Generated random state secret key. For production, provide a fixed key.")
         self.state_manager = StateManager(state_secret_key)
+        # Optional: per-session init hook (e.g., configure env from client payload)
+        self.session_init_handler: Callable[[dict[str, Any] | None], None] | None = None
+
+    def set_session_init_handler(
+        self, handler: Callable[[dict[str, Any] | None], None]
+    ) -> None:
+        """Register a handler invoked during session creation.
+
+        The handler receives the message content (dict or None) from the
+        user's create_session event to support per-session configuration.
+        """
+        self.session_init_handler = handler
 
     async def handle_connection(
         self, websocket: WebSocketServerProtocol, path: str | None = None
@@ -60,6 +87,15 @@ class AgentWebSocketServer:
 
         logger.info(f"New WebSocket connection: {connection_id}")
 
+        # Create per-connection outbound channel (single-writer)
+        outbound = OutboundChannel(websocket, name=f"conn-{connection_id}")
+        outbound.start()
+        self.outbounds[connection_id] = outbound
+        # Initialize sequence tracking and buffers
+        self.sequences[connection_id] = 0
+        self.last_ack[connection_id] = 0
+        self.buffers[connection_id] = deque(maxlen=1000)
+
         try:
             # Send connection confirmation
             await self._send_event(
@@ -69,6 +105,7 @@ class AgentWebSocketServer:
                     content="Connected to MyAgent WebSocket Server",
                     metadata={"connection_id": connection_id},
                 ),
+                connection_id=connection_id,
             )
 
             # Message handling loop
@@ -83,14 +120,18 @@ class AgentWebSocketServer:
                         create_event(
                             SystemEvents.ERROR, content=f"Invalid JSON: {e!s}"
                         ),
+                        connection_id=connection_id,
                     )
                 except Exception as e:
-                    logger.error(f"Error handling message from {connection_id}: {e}")
+                    logger.exception(
+                        f"Error handling message from {connection_id}: {e}"
+                    )
                     await self._send_event(
                         websocket,
                         create_event(
                             SystemEvents.ERROR, content=f"Message handling error: {e!s}"
                         ),
+                        connection_id=connection_id,
                     )
 
         except ConnectionClosed:
@@ -123,8 +164,10 @@ class AgentWebSocketServer:
         elif event_type == UserEvents.MESSAGE and session_id:
             logger.info(f"Handling MESSAGE event for session {session_id}")
             # Execute asynchronously, don't block message handling loop
-            message_task = asyncio.create_task(
-                self._handle_user_message(websocket, connection_id, session_id, message)
+            asyncio.create_task(
+                self._handle_user_message(
+                    websocket, connection_id, session_id, message
+                )
             )
         
         elif event_type == UserEvents.SOLVE_TASKS and session_id:
@@ -166,6 +209,21 @@ class AgentWebSocketServer:
             logger.info(f"Handling REQUEST_STATE event for session {session_id}")
             await self._handle_request_state(websocket, connection_id, session_id, message)
 
+        elif event_type == UserEvents.ACK:
+            # Update last acknowledged sequence for this connection
+            acked = self._parse_last_seq(message.get("content"))
+            prev = self.last_ack.get(connection_id, 0)
+            if acked > prev:
+                self.last_ack[connection_id] = acked
+                # prune buffer
+                buf = self.buffers.get(connection_id)
+                if buf is not None:
+                    while buf and buf[0][0] <= acked:
+                        buf.popleft()
+                logger.debug(f"ACK from {connection_id}: last_seq={acked}")
+            else:
+                logger.debug(f"ACK (stale) from {connection_id}: last_seq={acked}, prev={prev}")
+
         else:
             logger.warning(
                 f"Unknown event type or missing session_id: event={event_type}, session_id={session_id}"
@@ -193,6 +251,17 @@ class AgentWebSocketServer:
         session_id = str(uuid.uuid4())
 
         try:
+            # Invoke optional session init handler with user-provided content
+            try:
+                if callable(self.session_init_handler):
+                    content = None
+                    if isinstance(message, dict):
+                        c = message.get("content")
+                        content = c if isinstance(c, dict) else None
+                    self.session_init_handler(content)
+            except Exception as hook_err:  # pragma: no cover - defensive
+                logger.debug(f"session_init_handler error: {hook_err}")
+
             # Use factory function to create Agent
             agent = self.agent_factory_func()
 
@@ -202,6 +271,7 @@ class AgentWebSocketServer:
                 connection_id=connection_id,
                 agent=agent,
                 websocket=websocket,
+                send_event_func=lambda ev: self._send_event(websocket, ev, connection_id=connection_id),
             )
 
             self.sessions[session_id] = session
@@ -226,6 +296,7 @@ class AgentWebSocketServer:
                         "connection_id": connection_id,
                     },
                 ),
+                connection_id=connection_id,
             )
 
         except Exception as e:
@@ -245,42 +316,10 @@ class AgentWebSocketServer:
         message: dict[str, Any],
     ) -> None:
         """Handle user message, execute Agent"""
-        session = self.sessions.get(session_id)
+        session = await self._require_session(
+            websocket, connection_id, session_id, require_active=True
+        )
         if not session:
-            await self._send_event(
-                websocket,
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content="Session not found",
-                ),
-            )
-            return
-
-        # Enforce session-connection binding
-        if session.connection_id != connection_id:
-            logger.warning(
-                f"Session ownership mismatch for MESSAGE: session={session_id} belongs to {session.connection_id}, got {connection_id}"
-            )
-            await self._send_event(
-                websocket,
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content="Session does not belong to this connection",
-                ),
-            )
-            return
-
-        if not session.is_active():
-            await self._send_event(
-                websocket,
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content="Session is closed",
-                ),
-            )
             return
 
         user_input = message.get("content", "")
@@ -292,6 +331,7 @@ class AgentWebSocketServer:
                     session_id=session_id,
                     content="Message content cannot be empty",
                 ),
+                connection_id=connection_id,
             )
             return
 
@@ -303,7 +343,9 @@ class AgentWebSocketServer:
         try:
             await session.execute_streaming(user_input)
         except Exception as e:
-            logger.error(f"Error executing agent for session {session_id}: {e}")
+            logger.exception(
+                f"Error executing agent for session {session_id}: {e}"
+            )
             try:
                 await self._send_event(
                     websocket,
@@ -312,6 +354,7 @@ class AgentWebSocketServer:
                         session_id=session_id,
                         content=f"Agent execution error: {e!s}",
                     ),
+                    connection_id=connection_id,
                 )
             except Exception as send_error:
                 logger.error(f"Failed to send error event: {send_error}")
@@ -324,42 +367,10 @@ class AgentWebSocketServer:
         message: dict[str, Any],
     ) -> None:
         """Handle client-provided tasks to run solver directly (bypassing planner)."""
-        session = self.sessions.get(session_id)
+        session = await self._require_session(
+            websocket, connection_id, session_id, require_active=True
+        )
         if not session:
-            await self._send_event(
-                websocket,
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content="Session not found",
-                ),
-            )
-            return
-
-        # Enforce session-connection binding
-        if session.connection_id != connection_id:
-            logger.warning(
-                f"Session ownership mismatch for SOLVE_TASKS: session={session_id} belongs to {session.connection_id}, got {connection_id}"
-            )
-            await self._send_event(
-                websocket,
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content="Session does not belong to this connection",
-                ),
-            )
-            return
-
-        if not session.is_active():
-            await self._send_event(
-                websocket,
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content="Session is closed",
-                ),
-            )
             return
 
         content = message.get("content") or {}
@@ -381,13 +392,18 @@ class AgentWebSocketServer:
                     session_id=session_id,
                     content="Missing tasks in user.solve_tasks content",
                 ),
+                connection_id=connection_id,
             )
             return
 
         try:
-            await session.execute_solve_tasks(tasks, question=question, plan_summary=plan_summary)
+            await session.execute_solve_tasks(
+                tasks, question=question, plan_summary=plan_summary
+            )
         except Exception as e:
-            logger.error(f"Error executing solve_tasks for session {session_id}: {e}")
+            logger.exception(
+                f"Error executing solve_tasks for session {session_id}: {e}"
+            )
             try:
                 await self._send_event(
                     websocket,
@@ -396,6 +412,7 @@ class AgentWebSocketServer:
                         session_id=session_id,
                         content=f"solve_tasks execution error: {e!s}",
                     ),
+                    connection_id=connection_id,
                 )
             except Exception as send_error:
                 logger.error(f"Failed to send error event: {send_error}")
@@ -408,32 +425,10 @@ class AgentWebSocketServer:
         message: dict[str, Any],
     ) -> None:
         """Handle user response (for tool confirmation etc.)"""
-        session = self.sessions.get(session_id)
+        session = await self._require_session(
+            websocket, connection_id, session_id, require_active=False
+        )
         if not session:
-            logger.error(f"Session {session_id} not found for user response")
-            await self._send_event(
-                websocket,
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content="Session not found",
-                ),
-            )
-            return
-
-        # Enforce session-connection binding
-        if session.connection_id != connection_id:
-            logger.warning(
-                f"Session ownership mismatch for RESPONSE: session={session_id} belongs to {session.connection_id}, got {connection_id}"
-            )
-            await self._send_event(
-                websocket,
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=session_id,
-                    content="Session does not belong to this connection",
-                ),
-            )
             return
 
         step_id = message.get("step_id")
@@ -446,6 +441,7 @@ class AgentWebSocketServer:
                     session_id=session_id,
                     content="Missing step_id in user response",
                 ),
+                connection_id=connection_id,
             )
             return
 
@@ -454,7 +450,7 @@ class AgentWebSocketServer:
         try:
             await session.handle_user_response(step_id, response_data)
         except Exception as e:
-            logger.error(
+            logger.exception(
                 f"Error processing user response for session {session_id}: {e}"
             )
             await self._send_event(
@@ -464,6 +460,7 @@ class AgentWebSocketServer:
                     session_id=session_id,
                     content=f"Error processing user response: {e!s}",
                 ),
+                connection_id=connection_id,
             )
 
     async def _handle_cancel_task(
@@ -473,23 +470,10 @@ class AgentWebSocketServer:
         session_id: str,
         message: dict[str, Any],
     ) -> None:
-        session = self.sessions.get(session_id)
+        session = await self._require_session(
+            websocket, connection_id, session_id, require_active=False
+        )
         if not session:
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
-            )
-            return
-
-        # Enforce session-connection binding
-        if session.connection_id != connection_id:
-            logger.warning(
-                f"Session ownership mismatch for CANCEL_TASK: session={session_id} belongs to {session.connection_id}, got {connection_id}"
-            )
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Session does not belong to this connection"),
-            )
             return
         content = message.get("content") or {}
         task_id = content.get("task_id") if isinstance(content, dict) else None
@@ -497,6 +481,7 @@ class AgentWebSocketServer:
             await self._send_event(
                 websocket,
                 create_event(AgentEvents.ERROR, session_id=session_id, content="Missing task_id for cancel_task"),
+                connection_id=connection_id,
             )
             return
         agent = session.agent
@@ -513,6 +498,7 @@ class AgentWebSocketServer:
                         ),
                         metadata={"task_id": task_id, "action": "cancel_task", "ok": ok},
                     ),
+                    connection_id=connection_id,
                 )
             except Exception as e:
                 await self._send_event(
@@ -522,11 +508,13 @@ class AgentWebSocketServer:
                         session_id=session_id,
                         content=f"Failed to cancel task {task_id}: {e!s}",
                     ),
+                    connection_id=connection_id,
                 )
         else:
             await self._send_event(
                 websocket,
                 create_event(AgentEvents.ERROR, session_id=session_id, content="Agent does not support cancel_solver_task"),
+                connection_id=connection_id,
             )
 
     async def _handle_restart_task(
@@ -536,24 +524,13 @@ class AgentWebSocketServer:
         session_id: str,
         message: dict[str, Any],
     ) -> None:
-        session = self.sessions.get(session_id)
+        session = await self._require_session(
+            websocket, connection_id, session_id, require_active=False
+        )
         if not session:
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
-            )
             return
 
-        # Enforce session-connection binding
-        if session.connection_id != connection_id:
-            logger.warning(
-                f"Session ownership mismatch for RESTART_TASK: session={session_id} belongs to {session.connection_id}, got {connection_id}"
-            )
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Session does not belong to this connection"),
-            )
-            return
+        # Session validated by _require_session
         content = message.get("content") or {}
         task_id = content.get("task_id") if isinstance(content, dict) else None
         if task_id is None:
@@ -597,22 +574,10 @@ class AgentWebSocketServer:
         session_id: str,
         message: dict[str, Any],
     ) -> None:
-        session = self.sessions.get(session_id)
+        session = await self._require_session(
+            websocket, connection_id, session_id, require_active=False
+        )
         if not session:
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
-            )
-            return
-        # Enforce session-connection binding
-        if session.connection_id != connection_id:
-            logger.warning(
-                f"Session ownership mismatch for CANCEL_PLAN: session={session_id} belongs to {session.connection_id}, got {connection_id}"
-            )
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Session does not belong to this connection"),
-            )
             return
         agent = session.agent
         if hasattr(agent, "cancel_plan"):
@@ -639,22 +604,10 @@ class AgentWebSocketServer:
         session_id: str,
         message: dict[str, Any],
     ) -> None:
-        session = self.sessions.get(session_id)
+        session = await self._require_session(
+            websocket, connection_id, session_id, require_active=False
+        )
         if not session:
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Session not found"),
-            )
-            return
-        # Enforce session-connection binding
-        if session.connection_id != connection_id:
-            logger.warning(
-                f"Session ownership mismatch for REPLAN: session={session_id} belongs to {session.connection_id}, got {connection_id}"
-            )
-            await self._send_event(
-                websocket,
-                create_event(AgentEvents.ERROR, session_id=session_id, content="Session does not belong to this connection"),
-            )
             return
         agent = session.agent
         content = message.get("content") or {}
@@ -739,6 +692,16 @@ class AgentWebSocketServer:
         # Remove connection
         self.connections.pop(connection_id, None)
 
+        # Stop outbound writer and remove channel
+        outbound = self.outbounds.pop(connection_id, None)
+        if outbound is not None:
+            with contextlib.suppress(Exception):
+                await outbound.close()
+        # Clear sequence state
+        self.sequences.pop(connection_id, None)
+        self.last_ack.pop(connection_id, None)
+        self.buffers.pop(connection_id, None)
+
         # Find and close related sessions
         sessions_to_remove = []
         for session_id, session in self.sessions.items():
@@ -762,9 +725,60 @@ class AgentWebSocketServer:
             logger.info(f"Cleaned up connection {connection_id}")
 
     async def _send_event(
-        self, websocket: WebSocketServerProtocol, event: dict[str, Any]
+        self,
+        websocket: WebSocketServerProtocol,
+        event: dict[str, Any],
+        *,
+        connection_id: str | None = None,
     ) -> None:
-        """Send event to client"""
+        """Send event to client via per-connection outbound queue.
+
+        Falls back to direct send if channel is not available.
+        """
+        cid = connection_id
+        if cid is None:
+            # Best-effort reverse lookup
+            for k, v in self.connections.items():
+                if v is websocket:
+                    cid = k
+                    break
+
+        if cid is not None and cid in self.outbounds:
+            # Assign new sequence and event_id (override if present), retain originals in metadata
+            try:
+                seq = self.sequences.get(cid, 0) + 1
+                self.sequences[cid] = seq
+                prev_seq = event.get("seq")
+                prev_eid = event.get("event_id")
+                event["seq"] = seq
+                event["event_id"] = f"{cid}-{seq}"
+                md = dict(event.get("metadata") or {})
+                md["connection_id"] = cid
+                if prev_seq is not None and "orig_seq" not in md:
+                    md["orig_seq"] = prev_seq
+                if prev_eid is not None and "orig_event_id" not in md:
+                    md["orig_event_id"] = prev_eid
+                event["metadata"] = md
+                # Append to per-connection buffer
+                buf = self.buffers.get(cid)
+                if buf is not None:
+                    buf.append((seq, dict(event)))
+                # Append to per-session buffer for replay
+                sid = event.get("session_id")
+                if isinstance(sid, str) and sid:
+                    sbuf = self.session_buffers.get(sid)
+                    if sbuf is None:
+                        sbuf = self.session_buffers[sid] = deque(maxlen=1000)
+                    sbuf.append(dict(event))
+            except Exception as e:
+                logger.debug(f"Failed to stamp/enqueue seq/event_id: {e}")
+            try:
+                await self.outbounds[cid].enqueue(event)
+                return
+            except Exception as e:
+                logger.debug(f"Outbound enqueue failed for {cid}: {e}")
+
+        # Fallback to direct send (should be rare)
         success = await send_websocket_message(websocket, event)
         if not success:
             logger.debug(f"Failed to send event: {event.get('event', 'unknown')}")
@@ -803,7 +817,7 @@ class AgentWebSocketServer:
                         await heartbeat_task
 
         except Exception as e:
-            logger.error(f"Server error: {e}")
+            logger.exception(f"Server error: {e}")
             raise
         finally:
             self.running = False
@@ -837,22 +851,21 @@ class AgentWebSocketServer:
                         f"Heartbeat cleanup completed | Active sessions: {active_sessions}/{total_sessions}"
                     )
 
-                # Send heartbeat to active connections
+                # Send heartbeat to active connections (via outbound channel)
                 for connection_id, websocket in list(self.connections.items()):
                     if not is_websocket_closed(websocket):
                         heartbeat_event = create_event(
                             SystemEvents.HEARTBEAT,
                             metadata={
                                 "active_sessions": len(self.sessions),
-                                "uptime": 0,  # Simplified version, can add startup time tracking later
+                                "uptime": 0,
                             },
                         )
-                        success = await send_websocket_message(
-                            websocket, heartbeat_event
+                        await self._send_event(
+                            websocket,
+                            heartbeat_event,
+                            connection_id=connection_id,
                         )
-                        if not success:
-                            logger.debug(f"Heartbeat failed for {connection_id}")
-                            # Connection may be disconnected, will be removed in next cleanup
 
             except asyncio.CancelledError:
                 break
@@ -863,6 +876,7 @@ class AgentWebSocketServer:
         """Get server status"""
         active_sessions = sum(1 for s in self.sessions.values() if s.is_active())
 
+        outbound_sizes = {cid: ch.queue.qsize() for cid, ch in self.outbounds.items()}
         return {
             "running": self.running,
             "host": self.host,
@@ -871,6 +885,9 @@ class AgentWebSocketServer:
             "total_sessions": len(self.sessions),
             "active_sessions": active_sessions,
             "server_time": datetime.now().isoformat(),
+            "outbound_queues": outbound_sizes,
+            "last_seq": self.sequences.copy(),
+            "last_ack": self.last_ack.copy(),
         }
 
     async def _handle_reconnect_with_state(
@@ -929,6 +946,7 @@ class AgentWebSocketServer:
                 connection_id=connection_id,
                 agent=agent,
                 websocket=websocket,
+                send_event_func=lambda ev: self._send_event(websocket, ev, connection_id=connection_id),
             )
 
             # Restore state to session
@@ -940,6 +958,7 @@ class AgentWebSocketServer:
                         SystemEvents.ERROR,
                         content="Failed to restore session state",
                     ),
+                    connection_id=connection_id,
                 )
                 return
 
@@ -971,16 +990,55 @@ class AgentWebSocketServer:
                         "warnings": [] if restore_success else ["Some state restoration issues occurred"]
                     },
                 ),
+                connection_id=connection_id,
             )
 
+            # Attempt differential replay after state restoration
+            try:
+                content = message.get("content") or {}
+                last_seq = None
+                last_event_id = None
+                if isinstance(content, dict):
+                    if "last_event_id" in content:
+                        lei = content.get("last_event_id")
+                        if isinstance(lei, str) and lei:
+                            last_event_id = lei
+                    if "last_seq" in content:
+                        try:
+                            last_seq = int(content.get("last_seq") or 0)
+                        except Exception:
+                            last_seq = None
+                # Fallback to top-level fields
+                if last_event_id is None:
+                    lei = message.get("last_event_id")
+                    if isinstance(lei, str) and lei:
+                        last_event_id = lei
+                if last_seq is None and message.get("last_seq") is not None:
+                    try:
+                        last_seq = int(message.get("last_seq"))
+                    except Exception:
+                        last_seq = None
+
+                await self._replay_events_on_reconnect(
+                    websocket,
+                    connection_id,
+                    new_session_id,
+                    original_session_id,
+                    last_seq=last_seq,
+                    last_event_id=last_event_id,
+                )
+            except Exception as e:
+                logger.debug(f"Replay on reconnect skipped: {e}")
+
         except Exception as e:
-            logger.error(f"Failed to handle reconnect with state: {e}")
+            logger.exception(f"Failed to handle reconnect with state: {e}")
             await self._send_event(
                 websocket,
                 create_event(
                     SystemEvents.ERROR,
                     content=f"Reconnection failed: {str(e)}",
                 ),
+                connection_id=connection_id,
             )
 
     async def _handle_request_state(
@@ -1001,6 +1059,7 @@ class AgentWebSocketServer:
                         session_id=session_id,
                         content="Session not found",
                     ),
+                    connection_id=connection_id,
                 )
                 return
 
@@ -1016,6 +1075,7 @@ class AgentWebSocketServer:
                         session_id=session_id,
                         content="Session does not belong to this connection",
                     ),
+                    connection_id=connection_id,
                 )
                 return
 
@@ -1027,6 +1087,7 @@ class AgentWebSocketServer:
                         session_id=session_id,
                         content="Session is not active",
                     ),
+                    connection_id=connection_id,
                 )
                 return
 
@@ -1050,12 +1111,13 @@ class AgentWebSocketServer:
                         "current_step": state_data.get("current_step", 0),
                     },
                 ),
+                connection_id=connection_id,
             )
 
             logger.info(f"Exported state for session {session_id}")
 
         except Exception as e:
-            logger.error(f"Failed to export session state: {e}")
+            logger.exception(f"Failed to export session state: {e}")
             await self._send_event(
                 websocket,
                 create_event(
@@ -1063,6 +1125,7 @@ class AgentWebSocketServer:
                     session_id=session_id,
                     content=f"Failed to export state: {str(e)}",
                 ),
+                connection_id=connection_id,
             )
 
     async def shutdown(self) -> None:
@@ -1076,10 +1139,176 @@ class AgentWebSocketServer:
         for session in list(self.sessions.values()):
             await session.close()
 
-        # Close all connections
+        # Close all sessions' connections
         for websocket in list(self.connections.values()):
             await close_websocket_safely(websocket)
+
+        # Stop all outbound writers
+        for outbound in list(self.outbounds.values()):
+            with contextlib.suppress(Exception):
+                await outbound.close()
+        self.outbounds.clear()
 
         # Trigger shutdown event to stop server main loop
         self.shutdown_event.set()
         logger.info("Server shutdown complete")
+
+    async def _replay_events_on_reconnect(
+        self,
+        websocket: WebSocketServerProtocol,
+        connection_id: str,
+        new_session_id: str,
+        original_session_id: str | None,
+        *,
+        last_seq: int | None = None,
+        last_event_id: str | None = None,
+        max_replay: int = 200,
+    ) -> None:
+        """Replay buffered events after client reconnects with state.
+
+        If last_event_id is provided (format: "<prev_connection_id>-<seq>"),
+        only events from that connection and with seq greater than the provided
+        value will be replayed. Otherwise, falls back to filtering by seq only.
+        Replay events are retargeted to the new session_id and re-stamped with
+        fresh seq/event_id for the new connection.
+        """
+        if not original_session_id:
+            return
+        buf = self.session_buffers.get(original_session_id)
+        if not buf:
+            await self._send_event(
+                websocket,
+                create_event(
+                    SystemEvents.NOTICE,
+                    session_id=new_session_id,
+                    content="No buffered events available for replay",
+                    metadata={"action": "replay", "count": 0},
+                ),
+                connection_id=connection_id,
+            )
+            return
+
+        prev_cid = None
+        prev_seq = None
+        if isinstance(last_event_id, str) and "-" in last_event_id:
+            try:
+                prev_cid, prev_seq_str = last_event_id.rsplit("-", 1)
+                prev_seq = int(prev_seq_str)
+            except Exception:
+                prev_cid, prev_seq = None, None
+
+        candidates: list[dict[str, Any]] = []
+        for ev in buf:
+            try:
+                if prev_cid is not None and prev_seq is not None:
+                    if not str(ev.get("event_id", "")).startswith(f"{prev_cid}-"):
+                        continue
+                    if int(ev.get("seq") or 0) <= prev_seq:
+                        continue
+                elif last_seq is not None:
+                    if int(ev.get("seq") or 0) <= last_seq:
+                        continue
+                c = dict(ev)
+                c["session_id"] = new_session_id
+                candidates.append(c)
+            except Exception:
+                continue
+
+        if len(candidates) > max_replay:
+            candidates = candidates[-max_replay:]
+
+        for ev in candidates:
+            await self._send_event(
+                websocket,
+                ev,
+                connection_id=connection_id,
+            )
+
+        await self._send_event(
+            websocket,
+            create_event(
+                SystemEvents.NOTICE,
+                session_id=new_session_id,
+                content="Replay completed",
+                metadata={
+                    "action": "replay",
+                    "replayed": len(candidates),
+                    "last_event_id": last_event_id,
+                    "last_seq": last_seq,
+                },
+            ),
+            connection_id=connection_id,
+        )
+
+    # ----------------------------
+    # Helpers
+    # ----------------------------
+    async def _require_session(
+        self,
+        websocket: WebSocketServerProtocol,
+        connection_id: str,
+        session_id: str,
+        *,
+        require_active: bool,
+    ) -> AgentSession | None:
+        """Ensure a session exists, belongs to the connection, and meets activity requirements.
+
+        Sends a concise error event and returns None if validation fails.
+        """
+        session = self.sessions.get(session_id)
+        if not session:
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session not found",
+                ),
+                connection_id=connection_id,
+            )
+            return None
+
+        if session.connection_id != connection_id:
+            logger.warning(
+                "Session ownership mismatch: session=%s belongs to %s, got %s",
+                session_id,
+                session.connection_id,
+                connection_id,
+            )
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session does not belong to this connection",
+                ),
+                connection_id=connection_id,
+            )
+            return None
+
+        if require_active and not session.is_active():
+            await self._send_event(
+                websocket,
+                create_event(
+                    AgentEvents.ERROR,
+                    session_id=session_id,
+                    content="Session is closed",
+                ),
+                connection_id=connection_id,
+            )
+            return None
+
+        return session
+
+    @staticmethod
+    def _parse_last_seq(content: Any) -> int:
+        """Parse last_seq from ACK content supporting dict or raw int."""
+        if isinstance(content, dict):
+            try:
+                return int(content.get("last_seq", 0) or 0)
+            except Exception:
+                return 0
+        try:
+            return int(content or 0)
+        except Exception:
+            return 0

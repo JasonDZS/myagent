@@ -25,11 +25,13 @@ class AgentSession:
         connection_id: str,
         agent: BaseAgent,
         websocket: WebSocketServerProtocol,
+        send_event_func: Any | None = None,
     ):
         self.session_id = session_id
         self.connection_id = connection_id
         self.agent = agent
         self.websocket = websocket
+        self._send_func = send_event_func
         self.state = "idle"
         self.created_at = datetime.now()
         self.current_task: asyncio.Task | None = None
@@ -85,14 +87,7 @@ class AgentSession:
 
     async def execute_streaming(self, user_input: str) -> None:
         """Execute Agent in streaming mode and push status in real-time"""
-        if self.state == "running":
-            await self._send_event(
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=self.session_id,
-                    content="Agent is currently running, please try again later",
-                )
-            )
+        if await self._reject_if_running():
             return
 
         self.state = "running"
@@ -110,7 +105,7 @@ class AgentSession:
             # Don't send another interrupted event here, as it's already sent in cancel() method
             logger.debug(f"Task cancelled for session {self.session_id}")
         except Exception as e:
-            logger.error(f"Session {self.session_id} execution error: {e}")
+            logger.exception(f"Session {self.session_id} execution error: {e}")
             await self._send_event(
                 create_event(
                     AgentEvents.ERROR,
@@ -130,14 +125,7 @@ class AgentSession:
         plan_summary: str | None = None,
     ) -> None:
         """Execute solver-only flow with client-provided tasks and stream updates."""
-        if self.state == "running":
-            await self._send_event(
-                create_event(
-                    AgentEvents.ERROR,
-                    session_id=self.session_id,
-                    content="Agent is currently running, please try again later",
-                )
-            )
+        if await self._reject_if_running():
             return
 
         # Must have an agent supporting solve_tasks
@@ -162,7 +150,9 @@ class AgentSession:
         except asyncio.CancelledError:
             logger.debug(f"Task cancelled for session {self.session_id}")
         except Exception as e:
-            logger.error(f"Session {self.session_id} solve_tasks execution error: {e}")
+            logger.exception(
+                f"Session {self.session_id} solve_tasks execution error: {e}"
+            )
             await self._send_event(
                 create_event(
                     AgentEvents.ERROR,
@@ -225,76 +215,13 @@ class AgentSession:
     ) -> None:
         """Execute a single agent attempt and stream updates."""
         try:
-            if self.agent.state in (AgentState.FINISHED, AgentState.ERROR):
-                logger.info(
-                    "Resetting agent state from %s to IDLE for session %s before attempt %s/%s",
-                    self.agent.state,
-                    self.session_id,
-                    attempt,
-                    total_attempts,
-                )
-                self.agent.state = AgentState.IDLE
-                self.agent.current_step = 0
-
-                memory = getattr(self.agent, "memory", None)
-                if memory:
-                    messages_before = len(getattr(memory, "messages", []))
-                    try:
-                        memory.clean_incomplete_tool_calls()
-                    except Exception as clean_exc:  # pragma: no cover - best effort
-                        logger.debug(
-                            "Failed to clean incomplete tool calls for session %s: %s",
-                            self.session_id,
-                            clean_exc,
-                        )
-                    else:
-                        messages_after = len(getattr(memory, "messages", []))
-                        logger.info(
-                            "Cleaned incomplete tool_calls from agent memory for session %s: %s -> %s messages",
-                            self.session_id,
-                            messages_before,
-                            messages_after,
-                        )
-
-            # Monitor Agent tool calls only once per tool collection
+            await self._reset_agent_state_and_memory_if_finished(attempt, total_attempts)
             self._wrap_tool_calls()
+            self._ensure_fresh_final_response()
+            self._bind_ws_context(attempt, total_attempts)
 
-            # Ensure final response is fresh for this attempt
-            if hasattr(self.agent, "final_response"):
-                self.agent.final_response = None
-
-            # Set WebSocket session in context and agent for streaming support
-            try:
-                from .context import set_ws_session_context
-
-                set_ws_session_context(self)
-                self.agent.ws_session = self
-                logger.info(
-                    "Set WebSocket session for agent: session_id=%s (attempt %s/%s)",
-                    self.session_id,
-                    attempt,
-                    total_attempts,
-                )
-            except Exception as e:  # pragma: no cover - runtime safeguard
-                logger.error(f"Could not set WebSocket session: {e}")
-
-            # 执行 Agent
-            if hasattr(self.agent, "arun"):
-                result = await self.agent.arun(user_input)
-            elif hasattr(self.agent, "run"):
-                run_method = self.agent.run(user_input)
-                if asyncio.iscoroutine(run_method):
-                    result = await run_method
-                else:
-                    result = run_method
-            else:
-                raise AttributeError("Agent has no run or arun method")
-
-            final_content = (
-                getattr(self.agent, "final_response", None) or str(result)
-                if result
-                else "Execution completed"
-            )
+            result = await self._run_agent_entrypoint(user_input)
+            final_content = self._format_final_content(result)
             await self._send_event(
                 create_event(
                     AgentEvents.FINAL_ANSWER,
@@ -304,7 +231,7 @@ class AgentSession:
             )
 
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "Agent execution error for session %s on attempt %s/%s: %s",
                 self.session_id,
                 attempt,
@@ -313,15 +240,7 @@ class AgentSession:
             )
             raise
         finally:
-            # Clean up WebSocket session from context and agent
-            try:
-                from .context import clear_ws_session_context
-
-                clear_ws_session_context()
-                self.agent.ws_session = None
-                logger.debug("Cleaned up WebSocket session")
-            except Exception as e:  # pragma: no cover - best effort
-                logger.debug(f"Could not clean up WebSocket session: {e}")
+            self._unbind_ws_context()
 
     async def _execute_agent_solve_tasks_attempt(
         self,
@@ -334,68 +253,21 @@ class AgentSession:
     ) -> None:
         """Execute a single attempt of solve_tasks and stream final answer."""
         try:
-            if self.agent.state in (AgentState.FINISHED, AgentState.ERROR):
-                logger.info(
-                    "Resetting agent state from %s to IDLE for session %s before attempt %s/%s",
-                    self.agent.state,
-                    self.session_id,
-                    attempt,
-                    total_attempts,
-                )
-                self.agent.state = AgentState.IDLE
-                self.agent.current_step = 0
-
-                memory = getattr(self.agent, "memory", None)
-                if memory:
-                    messages_before = len(getattr(memory, "messages", []))
-                    try:
-                        memory.clean_incomplete_tool_calls()
-                    except Exception as clean_exc:  # pragma: no cover - best effort
-                        logger.debug(
-                            "Failed to clean incomplete tool calls for session %s: %s",
-                            self.session_id,
-                            clean_exc,
-                        )
-                    else:
-                        messages_after = len(getattr(memory, "messages", []))
-                        logger.info(
-                            "Cleaned incomplete tool_calls from agent memory for session %s: %s -> %s messages",
-                            self.session_id,
-                            messages_before,
-                            messages_after,
-                        )
-
-            # Monitor Agent tool calls only once per tool collection
+            await self._reset_agent_state_and_memory_if_finished(attempt, total_attempts)
             self._wrap_tool_calls()
+            self._ensure_fresh_final_response()
+            self._bind_ws_context(attempt, total_attempts)
 
-            # Ensure final response is fresh for this attempt
-            if hasattr(self.agent, "final_response"):
-                self.agent.final_response = None
-
-            # Set WebSocket session in context and agent for streaming support
-            try:
-                from .context import set_ws_session_context
-
-                set_ws_session_context(self)
-                self.agent.ws_session = self
-                logger.info(
-                    "Set WebSocket session for agent: session_id=%s (attempt %s/%s)",
-                    self.session_id,
-                    attempt,
-                    total_attempts,
-                )
-            except Exception as e:  # pragma: no cover - runtime safeguard
-                logger.error(f"Could not set WebSocket session: {e}")
-
-            # Execute solve_tasks on agent (direct-task mode)
             if hasattr(self.agent, "solve_tasks"):
-                result = await self.agent.solve_tasks(tasks, question=question, plan_summary=plan_summary)  # type: ignore[attr-defined]
+                await self.agent.solve_tasks(  # type: ignore[attr-defined]
+                    tasks, question=question, plan_summary=plan_summary
+                )
             else:
                 raise AttributeError("Agent does not implement solve_tasks")
-            # Do not send agent.final_answer in direct-task mode; solver.* events suffice
+            # No FINAL_ANSWER; solver.* events suffice
 
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "Agent solve_tasks error for session %s on attempt %s/%s: %s",
                 self.session_id,
                 attempt,
@@ -404,15 +276,7 @@ class AgentSession:
             )
             raise
         finally:
-            # Clean up WebSocket session from context and agent
-            try:
-                from .context import clear_ws_session_context
-
-                clear_ws_session_context()
-                self.agent.ws_session = None
-                logger.debug("Cleaned up WebSocket session")
-            except Exception as e:  # pragma: no cover - best effort
-                logger.debug(f"Could not clean up WebSocket session: {e}")
+            self._unbind_ws_context()
 
     async def _handle_retry(
         self, failed_attempt: int, total_attempts: int, error: Exception
@@ -748,7 +612,6 @@ class AgentSession:
         self.state = "idle"
         
         # Reset agent state to allow reuse after cancellation
-        from myagent.schema import AgentState
         if hasattr(self.agent, 'state'):
             logger.info(
                 f"Resetting agent state from {self.agent.state} to IDLE after cancellation for session {self.session_id}"
@@ -773,8 +636,118 @@ class AgentSession:
             )
         )
 
+    # ----------------------------
+    # Readability helpers
+    # ----------------------------
+    async def _reject_if_running(self) -> bool:
+        """Notify and return True if session is already running."""
+        if self.state != "running":
+            return False
+        await self._send_event(
+            create_event(
+                AgentEvents.ERROR,
+                session_id=self.session_id,
+                content="Agent is currently running, please try again later",
+            )
+        )
+        return True
+
+    async def _reset_agent_state_and_memory_if_finished(
+        self, attempt: int, total_attempts: int
+    ) -> None:
+        """Reset state and clean memory if previous run finished/errored."""
+        if getattr(self.agent, "state", None) in (AgentState.FINISHED, AgentState.ERROR):
+            logger.info(
+                "Resetting agent state from %s to IDLE for session %s before attempt %s/%s",
+                getattr(self.agent, "state", None),
+                self.session_id,
+                attempt,
+                total_attempts,
+            )
+            try:
+                self.agent.state = AgentState.IDLE
+                self.agent.current_step = 0
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+            memory = getattr(self.agent, "memory", None)
+            if memory:
+                messages_before = len(getattr(memory, "messages", []))
+                try:
+                    memory.clean_incomplete_tool_calls()
+                except Exception as clean_exc:  # pragma: no cover - best effort
+                    logger.debug(
+                        "Failed to clean incomplete tool calls for session %s: %s",
+                        self.session_id,
+                        clean_exc,
+                    )
+                else:
+                    messages_after = len(getattr(memory, "messages", []))
+                    logger.info(
+                        "Cleaned incomplete tool_calls from agent memory for session %s: %s -> %s messages",
+                        self.session_id,
+                        messages_before,
+                        messages_after,
+                    )
+
+    def _ensure_fresh_final_response(self) -> None:
+        if hasattr(self.agent, "final_response"):
+            self.agent.final_response = None
+
+    def _bind_ws_context(self, attempt: int, total_attempts: int) -> None:
+        try:
+            from .context import set_ws_session_context
+
+            set_ws_session_context(self)
+            self.agent.ws_session = self
+            logger.info(
+                "Set WebSocket session for agent: session_id=%s (attempt %s/%s)",
+                self.session_id,
+                attempt,
+                total_attempts,
+            )
+        except Exception as e:  # pragma: no cover - runtime safeguard
+            logger.error(f"Could not set WebSocket session: {e}")
+
+    def _unbind_ws_context(self) -> None:
+        try:
+            from .context import clear_ws_session_context
+
+            clear_ws_session_context()
+            self.agent.ws_session = None
+            logger.debug("Cleaned up WebSocket session")
+        except Exception as e:  # pragma: no cover - best effort
+            logger.debug(f"Could not clean up WebSocket session: {e}")
+
+    async def _run_agent_entrypoint(self, user_input: str) -> Any:
+        """Run agent via arun/run entrypoints and return result."""
+        if hasattr(self.agent, "arun"):
+            return await self.agent.arun(user_input)
+        if hasattr(self.agent, "run"):
+            run_method = self.agent.run(user_input)
+            if asyncio.iscoroutine(run_method):
+                return await run_method
+            return run_method
+        raise AttributeError("Agent has no run or arun method")
+
+    def _format_final_content(self, result: Any) -> str:
+        fr = getattr(self.agent, "final_response", None)
+        if fr:
+            return str(fr)
+        if result:
+            return str(result)
+        return "Execution completed"
+
     async def _send_event(self, event: dict[str, Any]) -> None:
-        """Send event to client"""
+        """Send event to client via injected sender or direct websocket."""
+        try:
+            if callable(self._send_func):
+                await self._send_func(event)
+                return
+        except Exception as e:
+            logger.debug(f"Injected send_event_func failed: {e}")
+
+        # Fallback path (should be rare when server injects send_func)
         if is_websocket_closed(self.websocket):
             logger.debug(
                 "WebSocket already closed for session %s, skipping event %s",

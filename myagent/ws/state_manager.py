@@ -5,7 +5,7 @@ import hmac
 import json
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from myagent.logger import logger
 
@@ -23,7 +23,7 @@ class StateManager:
         self.version = "1.0"
         self.state_ttl = 86400 * 7  # 7 days in seconds
     
-    def create_state_snapshot(self, session: 'AgentSession') -> Dict[str, Any]:
+    def create_state_snapshot(self, session: 'AgentSession') -> dict[str, Any]:
         """Create a serializable state snapshot from AgentSession.
         
         Args:
@@ -56,10 +56,10 @@ class StateManager:
             return state_data
             
         except Exception as e:
-            logger.error(f"Failed to create state snapshot: {e}")
+            logger.exception(f"Failed to create state snapshot: {e}")
             raise
     
-    def sign_state(self, state_data: Dict[str, Any]) -> Dict[str, Any]:
+    def sign_state(self, state_data: dict[str, Any]) -> dict[str, Any]:
         """Sign state data for secure client-side storage.
         
         Args:
@@ -96,10 +96,10 @@ class StateManager:
             return signed_state
             
         except Exception as e:
-            logger.error(f"Failed to sign state: {e}")
+            logger.exception(f"Failed to sign state: {e}")
             raise
     
-    def verify_state(self, signed_state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any], str]:
+    def verify_state(self, signed_state: dict[str, Any]) -> tuple[bool, dict[str, Any], str]:
         """Verify signed state data from client.
         
         Args:
@@ -156,10 +156,10 @@ class StateManager:
             return True, state_data, ""
             
         except Exception as e:
-            logger.error(f"State verification failed: {e}")
+            logger.exception(f"State verification failed: {e}")
             return False, {}, f"Verification error: {str(e)}"
     
-    def restore_session_from_state(self, session: 'AgentSession', state_data: Dict[str, Any]) -> bool:
+    def restore_session_from_state(self, session: 'AgentSession', state_data: dict[str, Any]) -> bool:
         """Restore AgentSession from verified state data.
         
         Args:
@@ -208,7 +208,7 @@ class StateManager:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to restore session from state: {e}")
+            logger.exception(f"Failed to restore session from state: {e}")
             return False
     
     def _serialize_agent_memory(self, agent) -> str:
@@ -241,7 +241,7 @@ class StateManager:
             logger.error(f"Failed to serialize agent memory: {e}")
             return "[]"
     
-    def _serialize_tool_states(self, agent) -> Dict[str, Any]:
+    def _serialize_tool_states(self, agent) -> dict[str, Any]:
         """Serialize tool states (excluding sensitive information)."""
         try:
             tool_states = {}
@@ -268,10 +268,10 @@ class StateManager:
                         tool_states[tool_name] = tool_state
             return tool_states
         except Exception as e:
-            logger.error(f"Failed to serialize tool states: {e}")
+            logger.exception(f"Failed to serialize tool states: {e}")
             return {}
     
-    def _get_agent_config(self, agent) -> Dict[str, Any]:
+    def _get_agent_config(self, agent) -> dict[str, Any]:
         """Extract agent configuration (non-sensitive)."""
         try:
             config = {}
@@ -283,10 +283,10 @@ class StateManager:
                 config['max_steps'] = agent.max_steps
             return config
         except Exception as e:
-            logger.error(f"Failed to extract agent config: {e}")
+            logger.exception(f"Failed to extract agent config: {e}")
             return {}
     
-    def _sanitize_state(self, state_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_state(self, state_data: dict[str, Any]) -> dict[str, Any]:
         """Remove sensitive information from state data."""
         sanitized = state_data.copy()
         
@@ -317,7 +317,7 @@ class StateManager:
         
         return sanitized
     
-    def _validate_state_structure(self, state_data: Dict[str, Any]) -> Optional[str]:
+    def _validate_state_structure(self, state_data: dict[str, Any]) -> str | None:
         """Validate state data structure."""
         required_fields = ["session_id", "current_step", "agent_state", "created_at"]
         for field in required_fields:
@@ -342,7 +342,7 @@ class StateManager:
         
         return None
     
-    def _restore_agent_memory(self, agent, memory_snapshot: Optional[str]) -> bool:
+    def _restore_agent_memory(self, agent, memory_snapshot: str | None) -> bool:
         """Restore agent memory from snapshot."""
         try:
             if not memory_snapshot or not hasattr(agent, 'memory'):
@@ -366,10 +366,10 @@ class StateManager:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to restore agent memory: {e}")
+            logger.exception(f"Failed to restore agent memory: {e}")
             return False
     
-    def _restore_tool_states(self, agent, tool_states: Optional[Dict[str, Any]]) -> bool:
+    def _restore_tool_states(self, agent, tool_states: dict[str, Any] | None) -> bool:
         """Restore tool states (limited restoration for security)."""
         try:
             if not tool_states:
@@ -380,5 +380,5 @@ class StateManager:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to restore tool states: {e}")
+            logger.exception(f"Failed to restore tool states: {e}")
             return False
