@@ -242,7 +242,7 @@ useSessionStore.getInitialState = sessionStore.getInitialState;
 import { jsx } from "react/jsx-runtime";
 var MyAgentCtx = createContext(null);
 function MyAgentProvider(props) {
-  const { wsUrl, token, autoReconnect = true, showSystemLogs = false, onEvent, children } = props;
+  const { wsUrl, token, autoReconnect = true, showSystemLogs = false, onEvent, sessionId, children } = props;
   const [state, setState] = useState({
     connection: "disconnected",
     messages: [],
@@ -288,11 +288,6 @@ function MyAgentProvider(props) {
           }
         }
       } catch {
-      }
-      if (m.event === "agent.session_created" && m.session_id) {
-        const store = useSessionStore.getState();
-        store.setCurrentSession(m.session_id);
-        store.setViewSession(m.session_id);
       }
       appendMessage(m);
       setState((s) => {
@@ -348,16 +343,8 @@ function MyAgentProvider(props) {
             break;
         }
         const generating = !!(planRunning || aggregateRunning || solverRunning > 0 || thinking);
-        const incomingSessionId = m.session_id;
-        let currentSessionId = s.currentSessionId;
-        if (m.event === "agent.session_created" && incomingSessionId) {
-          currentSessionId = incomingSessionId;
-        } else if (!currentSessionId && incomingSessionId) {
-          currentSessionId = incomingSessionId;
-        }
         return {
           ...s,
-          currentSessionId,
           lastEventId,
           lastSeq,
           planRunning,
@@ -382,7 +369,17 @@ function MyAgentProvider(props) {
   const sessionOrder = useSessionStore((s) => s.sessionOrder);
   const storeViewSessionId = useSessionStore((s) => s.viewSessionId);
   const storeCurrentSessionId = useSessionStore((s) => s.currentSessionId);
-  const effectiveViewSessionId = storeViewSessionId ?? storeCurrentSessionId ?? state.currentSessionId;
+  useEffect(() => {
+    if (sessionId) {
+      const store = useSessionStore.getState();
+      store.setCurrentSession(sessionId);
+      store.setViewSession(sessionId);
+      setState((s) => s.currentSessionId === sessionId ? s : { ...s, currentSessionId: sessionId });
+    } else {
+      setState((s) => typeof s.currentSessionId === "undefined" ? s : { ...s, currentSessionId: void 0 });
+    }
+  }, [sessionId]);
+  const effectiveViewSessionId = sessionId ?? storeViewSessionId ?? storeCurrentSessionId ?? state.currentSessionId;
   useEffect(() => {
     if (!effectiveViewSessionId && sessionOrder.length > 0) {
       const first = sessionOrder.find((id) => id !== DEFAULT_SESSION_ID);
@@ -405,74 +402,75 @@ function MyAgentProvider(props) {
   );
   const derivedState = useMemo(() => ({
     ...state,
+    currentSessionId: sessionId ?? state.currentSessionId,
     messages,
     availableSessions,
     viewSessionId: effectiveViewSessionId
-  }), [state, messages, availableSessions, effectiveViewSessionId]);
+  }), [state, messages, availableSessions, effectiveViewSessionId, sessionId]);
   const api = useMemo(() => ({
     state: derivedState,
     client: clientRef.current,
     createSession: (content) => send({ event: "user.create_session", content }),
     sendUserMessage: (content) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
       const now = (/* @__PURE__ */ new Date()).toISOString();
-      useSessionStore.getState().addMessage(sessionId, {
+      useSessionStore.getState().addMessage(resolvedSessionId, {
         event: "user.message",
         timestamp: now,
-        session_id: sessionId,
+        session_id: resolvedSessionId,
         content,
-        event_id: `user.message.local.${sessionId}.${Date.now()}.${Math.random().toString(16).slice(2, 8)}`,
+        event_id: `user.message.local.${resolvedSessionId}.${Date.now()}.${Math.random().toString(16).slice(2, 8)}`,
         metadata: { local: true }
       });
-      send({ event: "user.message", session_id: sessionId, content });
+      send({ event: "user.message", session_id: resolvedSessionId, content });
     },
     sendResponse: (stepId, content) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: "user.response", session_id: sessionId, step_id: stepId, content });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: "user.response", session_id: resolvedSessionId, step_id: stepId, content });
     },
     cancel: () => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: "user.cancel", session_id: sessionId });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: "user.cancel", session_id: resolvedSessionId });
     },
     solveTasks: (tasks, extras) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
       const content = { tasks };
       if (extras?.question) content.question = extras.question;
       if (extras?.plan_summary) content.plan_summary = extras.plan_summary;
-      send({ event: "user.solve_tasks", session_id: sessionId, content });
+      send({ event: "user.solve_tasks", session_id: resolvedSessionId, content });
     },
     cancelTask: (taskId) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: "user.cancel_task", session_id: sessionId, content: { task_id: taskId } });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: "user.cancel_task", session_id: resolvedSessionId, content: { task_id: taskId } });
     },
     restartTask: (taskId) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: "user.restart_task", session_id: sessionId, content: { task_id: taskId } });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: "user.restart_task", session_id: resolvedSessionId, content: { task_id: taskId } });
     },
     cancelPlan: () => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: "user.cancel_plan", session_id: sessionId });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: "user.cancel_plan", session_id: resolvedSessionId });
     },
     replan: (question) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: "user.replan", session_id: sessionId, content: question ? { question } : void 0 });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: "user.replan", session_id: resolvedSessionId, content: question ? { question } : void 0 });
     },
     requestState: () => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: "user.request_state", session_id: sessionId });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: "user.request_state", session_id: resolvedSessionId });
     },
     reconnectWithState: (signedState, last) => send({ event: "user.reconnect_with_state", signed_state: signedState, ...last || {} }),
-    selectSession: (sessionId) => {
-      useSessionStore.getState().setViewSession(sessionId);
+    selectSession: (sessionId2) => {
+      useSessionStore.getState().setViewSession(sessionId2);
     }
   }), [send, derivedState]);
   return /* @__PURE__ */ jsx(MyAgentCtx.Provider, { value: api, children });
@@ -482,9 +480,6 @@ function useMyAgent() {
   if (!ctx) throw new Error("useMyAgent must be used within MyAgentProvider");
   return ctx;
 }
-
-// src/components/MyAgentConsole.tsx
-import React5 from "react";
 
 // src/components/MessageList.tsx
 import { useEffect as useEffect3, useRef as useRef2 } from "react";
@@ -781,140 +776,23 @@ function MessageList({ messages, generating, onConfirm, onDecline }) {
   ] });
 }
 
-// src/components/UserInput.tsx
-import { useState as useState3 } from "react";
-import { Loader2 } from "lucide-react";
-import { jsx as jsx4, jsxs as jsxs3 } from "react/jsx-runtime";
-function UserInput({ onSend, disabled, generating, onCancel }) {
-  const [text, setText] = useState3("");
-  const send = () => {
-    const v = text.trim();
-    if (!v) return;
-    onSend(v);
-    setText("");
-  };
-  return /* @__PURE__ */ jsxs3("div", { className: "ma-input", children: [
-    /* @__PURE__ */ jsx4(
-      "input",
-      {
-        className: "ma-text",
-        placeholder: "\u8F93\u5165\u4F60\u7684\u6D88\u606F...",
-        value: text,
-        disabled: disabled || generating,
-        onChange: (e) => setText(e.target.value),
-        onKeyDown: (e) => {
-          if (!generating && e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            send();
-          }
-        }
-      }
-    ),
-    generating ? /* @__PURE__ */ jsxs3("button", { className: "ma-btn ma-send", onClick: onCancel, children: [
-      /* @__PURE__ */ jsx4(Loader2, { size: 16, className: "ma-spin" }),
-      /* @__PURE__ */ jsx4("span", { style: { marginLeft: 6 }, children: "\u6253\u65AD" })
-    ] }) : /* @__PURE__ */ jsx4("button", { className: "ma-btn ma-send", disabled, onClick: send, children: "\u53D1\u9001" })
-  ] });
-}
-
-// src/components/ConnectionStatus.tsx
-import { jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
-function ConnectionStatus({ status }) {
-  return /* @__PURE__ */ jsxs4("div", { className: "ma-status", title: `Connection: ${status}`, children: [
-    /* @__PURE__ */ jsx5("span", { className: `ma-dot ${status}` }),
-    /* @__PURE__ */ jsx5("span", { children: status })
-  ] });
-}
-
 // src/components/MyAgentConsole.tsx
-import { jsx as jsx6, jsxs as jsxs5 } from "react/jsx-runtime";
+import { jsx as jsx4 } from "react/jsx-runtime";
 function MyAgentConsole({
   className,
   theme = "dark"
 }) {
-  const { state, createSession, sendUserMessage, sendResponse, requestState, reconnectWithState, cancel, selectSession } = useMyAgent();
-  const onMountCreate = React5.useRef(false);
-  React5.useEffect(() => {
-    if (state.connection === "connected" && !state.currentSessionId && !onMountCreate.current) {
-      onMountCreate.current = true;
-      createSession();
-    }
-  }, [state.connection, state.currentSessionId, createSession]);
+  const { state, sendResponse } = useMyAgent();
   const rootClassName = ["ma-console", `ma-theme-${theme}`, className].filter(Boolean).join(" ");
-  const sessionOptions = state.availableSessions ?? [];
-  const fallbackSessionId = sessionOptions.length > 0 ? sessionOptions[0]?.sessionId ?? "" : "";
-  const activeSessionId = state.viewSessionId ?? state.currentSessionId ?? fallbackSessionId;
-  const canSelect = sessionOptions.length > 0;
-  const viewingActiveSession = !state.viewSessionId || state.viewSessionId === state.currentSessionId;
-  const inputDisabled = !state.currentSessionId || state.connection !== "connected" || !viewingActiveSession;
-  const listGenerating = viewingActiveSession ? !!state.generating : false;
-  return /* @__PURE__ */ jsxs5("div", { className: rootClassName, children: [
-    /* @__PURE__ */ jsxs5("div", { className: "ma-header", children: [
-      /* @__PURE__ */ jsxs5("div", { className: "ma-header-main", children: [
-        /* @__PURE__ */ jsx6(ConnectionStatus, { status: state.connection }),
-        /* @__PURE__ */ jsxs5("div", { className: "ma-session-switcher", children: [
-          /* @__PURE__ */ jsx6("label", { className: "ma-session-label", htmlFor: "ma-session-select", children: "\u4F1A\u8BDD" }),
-          /* @__PURE__ */ jsxs5(
-            "select",
-            {
-              id: "ma-session-select",
-              className: "ma-select",
-              value: canSelect ? activeSessionId : "",
-              onChange: (ev) => selectSession(ev.target.value),
-              disabled: !canSelect,
-              children: [
-                !canSelect && /* @__PURE__ */ jsx6("option", { value: "", children: "\u6682\u65E0\u4F1A\u8BDD" }),
-                canSelect && sessionOptions.map((session) => {
-                  const label = session.sessionId.length > 12 ? `${session.sessionId.slice(0, 6)}\u2026${session.sessionId.slice(-4)}` : session.sessionId;
-                  return /* @__PURE__ */ jsx6("option", { value: session.sessionId, title: session.sessionId, children: label }, session.sessionId);
-                })
-              ]
-            }
-          )
-        ] })
-      ] }),
-      /* @__PURE__ */ jsxs5("div", { className: "ma-actions", children: [
-        /* @__PURE__ */ jsx6("button", { className: "ma-btn", onClick: () => createSession(), children: "\u65B0\u5EFA\u4F1A\u8BDD" }),
-        /* @__PURE__ */ jsx6("button", { className: "ma-btn", onClick: () => requestState(), children: "\u5BFC\u51FA\u72B6\u6001" }),
-        /* @__PURE__ */ jsx6(
-          "button",
-          {
-            className: "ma-btn",
-            onClick: () => {
-              try {
-                const raw = typeof localStorage !== "undefined" ? localStorage.getItem("ma_state_latest") : null;
-                if (!raw) return;
-                const signed = JSON.parse(raw);
-                const last = state.lastEventId ? { last_event_id: state.lastEventId } : { last_seq: state.lastSeq };
-                reconnectWithState(signed, last);
-              } catch {
-              }
-            },
-            children: "\u6062\u590D\u72B6\u6001"
-          }
-        )
-      ] })
-    ] }),
-    !viewingActiveSession && /* @__PURE__ */ jsx6("div", { className: "ma-banner", children: /* @__PURE__ */ jsx6("span", { className: "ma-muted", children: "\u6B63\u5728\u67E5\u770B\u5386\u53F2\u4F1A\u8BDD\uFF0C\u65E0\u6CD5\u53D1\u9001\u65B0\u6D88\u606F" }) }),
-    /* @__PURE__ */ jsx6(
-      MessageList,
-      {
-        messages: state.messages,
-        generating: listGenerating,
-        onConfirm: (msg, payload) => sendResponse(msg.step_id, payload),
-        onDecline: (msg, payload) => sendResponse(msg.step_id, payload || { confirmed: false })
-      }
-    ),
-    /* @__PURE__ */ jsx6(
-      UserInput,
-      {
-        onSend: sendUserMessage,
-        disabled: inputDisabled,
-        generating: !!state.generating,
-        onCancel: () => cancel()
-      }
-    )
-  ] });
+  return /* @__PURE__ */ jsx4("div", { className: rootClassName, children: /* @__PURE__ */ jsx4(
+    MessageList,
+    {
+      messages: state.messages,
+      generating: !!state.generating,
+      onConfirm: (msg, payload) => sendResponse(msg.step_id, payload),
+      onDecline: (msg, payload) => sendResponse(msg.step_id, payload || { confirmed: false })
+    }
+  ) });
 }
 export {
   AgentWSClient,

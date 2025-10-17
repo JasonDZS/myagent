@@ -24,7 +24,7 @@ interface Ctx {
 const MyAgentCtx = createContext<Ctx | null>(null);
 
 export function MyAgentProvider(props: MyAgentProviderProps) {
-  const { wsUrl, token, autoReconnect = true, showSystemLogs = false, onEvent, children } = props;
+  const { wsUrl, token, autoReconnect = true, showSystemLogs = false, onEvent, sessionId, children } = props;
   const [state, setState] = useState<AgentConsoleState>({
     connection: 'disconnected',
     messages: [],
@@ -74,12 +74,6 @@ export function MyAgentProvider(props: MyAgentProviderProps) {
           }
         }
       } catch {}
-
-      if (m.event === 'agent.session_created' && m.session_id) {
-        const store = useSessionStore.getState();
-        store.setCurrentSession(m.session_id);
-        store.setViewSession(m.session_id);
-      }
 
       appendMessage(m);
 
@@ -137,16 +131,8 @@ export function MyAgentProvider(props: MyAgentProviderProps) {
             break;
         }
         const generating = !!(planRunning || aggregateRunning || (solverRunning > 0) || thinking);
-        const incomingSessionId = m.session_id;
-        let currentSessionId = s.currentSessionId;
-        if (m.event === 'agent.session_created' && incomingSessionId) {
-          currentSessionId = incomingSessionId;
-        } else if (!currentSessionId && incomingSessionId) {
-          currentSessionId = incomingSessionId;
-        }
         return {
           ...s,
-          currentSessionId,
           lastEventId,
           lastSeq,
           planRunning,
@@ -174,7 +160,18 @@ export function MyAgentProvider(props: MyAgentProviderProps) {
   const storeViewSessionId = useSessionStore((s) => s.viewSessionId);
   const storeCurrentSessionId = useSessionStore((s) => s.currentSessionId);
 
-  const effectiveViewSessionId = storeViewSessionId ?? storeCurrentSessionId ?? state.currentSessionId;
+  useEffect(() => {
+    if (sessionId) {
+      const store = useSessionStore.getState();
+      store.setCurrentSession(sessionId);
+      store.setViewSession(sessionId);
+      setState((s) => (s.currentSessionId === sessionId ? s : { ...s, currentSessionId: sessionId }));
+    } else {
+      setState((s) => (typeof s.currentSessionId === 'undefined' ? s : { ...s, currentSessionId: undefined }));
+    }
+  }, [sessionId]);
+
+  const effectiveViewSessionId = sessionId ?? storeViewSessionId ?? storeCurrentSessionId ?? state.currentSessionId;
 
   useEffect(() => {
     if (!effectiveViewSessionId && sessionOrder.length > 0) {
@@ -204,71 +201,72 @@ export function MyAgentProvider(props: MyAgentProviderProps) {
 
   const derivedState = useMemo<AgentConsoleState>(() => ({
     ...state,
+    currentSessionId: sessionId ?? state.currentSessionId,
     messages,
     availableSessions,
     viewSessionId: effectiveViewSessionId,
-  }), [state, messages, availableSessions, effectiveViewSessionId]);
+  }), [state, messages, availableSessions, effectiveViewSessionId, sessionId]);
 
   const api = useMemo<Ctx>(() => ({
     state: derivedState,
     client: clientRef.current,
     createSession: (content?: any) => send({ event: 'user.create_session', content }),
     sendUserMessage: (content: any) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
       const now = new Date().toISOString();
-      useSessionStore.getState().addMessage(sessionId, {
+      useSessionStore.getState().addMessage(resolvedSessionId, {
         event: 'user.message',
         timestamp: now,
-        session_id: sessionId,
+        session_id: resolvedSessionId,
         content,
-        event_id: `user.message.local.${sessionId}.${Date.now()}.${Math.random().toString(16).slice(2, 8)}`,
+        event_id: `user.message.local.${resolvedSessionId}.${Date.now()}.${Math.random().toString(16).slice(2, 8)}`,
         metadata: { local: true },
       });
-      send({ event: 'user.message', session_id: sessionId, content });
+      send({ event: 'user.message', session_id: resolvedSessionId, content });
     },
     sendResponse: (stepId: string, content: any) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: 'user.response', session_id: sessionId, step_id: stepId, content });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: 'user.response', session_id: resolvedSessionId, step_id: stepId, content });
     },
     cancel: () => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: 'user.cancel', session_id: sessionId });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: 'user.cancel', session_id: resolvedSessionId });
     },
     solveTasks: (tasks: any[], extras?: { question?: string; plan_summary?: string }) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
       const content: any = { tasks };
       if (extras?.question) content.question = extras.question;
       if (extras?.plan_summary) content.plan_summary = extras.plan_summary;
-      send({ event: 'user.solve_tasks', session_id: sessionId, content });
+      send({ event: 'user.solve_tasks', session_id: resolvedSessionId, content });
     },
     cancelTask: (taskId: string | number) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: 'user.cancel_task', session_id: sessionId, content: { task_id: taskId } });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: 'user.cancel_task', session_id: resolvedSessionId, content: { task_id: taskId } });
     },
     restartTask: (taskId: string | number) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: 'user.restart_task', session_id: sessionId, content: { task_id: taskId } });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: 'user.restart_task', session_id: resolvedSessionId, content: { task_id: taskId } });
     },
     cancelPlan: () => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: 'user.cancel_plan', session_id: sessionId });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: 'user.cancel_plan', session_id: resolvedSessionId });
     },
     replan: (question?: string) => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: 'user.replan', session_id: sessionId, content: question ? { question } : undefined });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: 'user.replan', session_id: resolvedSessionId, content: question ? { question } : undefined });
     },
     requestState: () => {
-      const sessionId = derivedState.currentSessionId;
-      if (!sessionId) return;
-      send({ event: 'user.request_state', session_id: sessionId });
+      const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
+      if (!resolvedSessionId) return;
+      send({ event: 'user.request_state', session_id: resolvedSessionId });
     },
     reconnectWithState: (signedState: any, last?: { last_event_id?: string; last_seq?: number }) =>
       send({ event: 'user.reconnect_with_state', signed_state: signedState, ...(last || {}) }),

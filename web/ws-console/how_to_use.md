@@ -23,19 +23,29 @@ import '@myagent/ws-console/styles.css';
 
 ## 3. 包裹 `MyAgentProvider`
 
-`MyAgentProvider` 负责创建 WebSocket 客户端、维护会话状态，并通过上下文向控制台组件和自定义 Hook 暴露操作能力。
+`MyAgentProvider` 负责创建 WebSocket 客户端、维护会话状态，并通过上下文向控制台组件和自定义 Hook 暴露操作能力。需要把当前会话的 `sessionId` 作为属性传入：
 
 ```tsx
-import { MyAgentProvider } from '@myagent/ws-console';
+import { useCallback, useState } from 'react';
+import { MyAgentProvider, type WebSocketMessage } from '@myagent/ws-console';
 
 function Providers({ children }: { children: React.ReactNode }) {
+  const [sessionId, setSessionId] = useState<string>();
+
+  const handleEvent = useCallback((event: WebSocketMessage) => {
+    if (event.event === 'agent.session_created' && event.session_id) {
+      setSessionId(event.session_id);
+    }
+  }, []);
+
   return (
     <MyAgentProvider
       wsUrl="wss://your-agent-server/ws"
       token={process.env.AGENT_TOKEN}
       autoReconnect
       showSystemLogs={false}
-      onEvent={(event) => console.debug('[agent-event]', event)}
+      onEvent={handleEvent}
+      sessionId={sessionId}
     >
       {children}
     </MyAgentProvider>
@@ -47,34 +57,52 @@ function Providers({ children }: { children: React.ReactNode }) {
 - `token`：选填，附加在连接请求中的身份凭证。
 - `autoReconnect`：默认 `true`，断线后自动重连。
 - `showSystemLogs`：为 `true` 时保留 `system.*` 类型的消息。
-- `onEvent`：可选回调，收到任意服务端消息时触发。
+- `onEvent`：可选回调，收到任意服务端消息时触发，可结合 `agent.session_created` 更新外部的 `sessionId`。
+- `sessionId`：外部控制当前正在查看/交互的会话 ID。
 
 ## 4. 渲染控制台
 
-`MyAgentConsole` 会在首次连接成功时自动调用 `createSession()`，并提供基础交互按钮：
-
-- **新建会话**：手动触发新的会话生命周期。
-- **导出状态**：请求服务端发送签名状态，并写入 `localStorage`。
-- **恢复状态**：从 `localStorage` 读取最近一次导出的状态并重连。
-- **会话切换**：头部下拉框列出本地缓存的所有会话，选择后可浏览历史消息（此时输入框会临时禁用，避免向旧会话发送消息）。
-
-所有消息会基于 Zustand 存入浏览器 `localStorage`，即使刷新页面也能保留历史记录并继续查看。
-
-示例：
+`MyAgentConsole` 负责渲染指定 `sessionId` 的消息列表与确认弹窗，不再自带输入框和会话管理。你可以在外部组合头部、输入框等 UI（`web/ws-console/example` 提供了完整示例）。控制器组件示例：
 
 ```tsx
-import { MyAgentConsole } from '@myagent/ws-console';
+import React, { useCallback, useState } from 'react';
+import { MyAgentProvider, MyAgentConsole, useMyAgent, type WebSocketMessage } from '@myagent/ws-console';
+import { UserInput } from '@myagent/ws-console/components/UserInput';
+
+function ConsoleShell() {
+  const { state, createSession, sendUserMessage, cancel } = useMyAgent();
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: 560 }}>
+      <button onClick={() => createSession()}>新建会话</button>
+      <MyAgentConsole />
+      <UserInput
+        onSend={(text) => sendUserMessage(text)}
+        disabled={state.connection !== 'connected' || !state.currentSessionId}
+        generating={state.generating}
+        onCancel={() => cancel()}
+      />
+    </div>
+  );
+}
 
 export default function AgentPage() {
+  const [sessionId, setSessionId] = useState<string>();
+  const handleEvent = useCallback((event: WebSocketMessage) => {
+    if (event.event === 'agent.session_created' && event.session_id) {
+      setSessionId(event.session_id);
+    }
+  }, []);
+
   return (
-    <div style={{ height: 640 }}>
-      <MyAgentConsole className="custom-console" theme="light" />
-    </div>
+    <MyAgentProvider wsUrl="wss://your-agent-server/ws" sessionId={sessionId} onEvent={handleEvent}>
+      <ConsoleShell />
+    </MyAgentProvider>
   );
 }
 ```
 
-`className` 参数可用于挂载额外的样式类名，`theme` 可在 `dark`/`light` 之间切换。
+所有消息依旧基于 Zustand 缓存在浏览器 `localStorage` 中，刷新页面后仍可查看历史。
 
 ## 5. 扩展自定义行为
 
@@ -84,7 +112,7 @@ export default function AgentPage() {
 import { useMyAgent } from '@myagent/ws-console';
 
 function CustomFooter() {
-  const { state, selectSession, sendUserMessage, cancel, solveTasks } = useMyAgent();
+  const { state, createSession, selectSession, sendUserMessage, cancel, solveTasks } = useMyAgent();
 
   return (
     <footer>
@@ -97,6 +125,7 @@ function CustomFooter() {
           </button>
         ))}
       </div>
+      <button onClick={() => createSession()}>新建会话</button>
       <button onClick={() => sendUserMessage({ text: 'ping' })}>发送消息</button>
       <button onClick={() => cancel()}>停止当前流程</button>
       <button onClick={() => solveTasks([{ task_id: 'custom', description: 'Run job' }])}>
@@ -109,7 +138,7 @@ function CustomFooter() {
 
 常用字段和方法：
 
-- `state.messages`：服务端事件数组，`MyAgentConsole` 会自动渲染。
+- `state.messages`：当前 `sessionId` 对应的服务端事件数组，`MyAgentConsole` 会自动渲染。
 - `state.generating`：计划、聚合、工具调用或「思考中」状态的组合标记。
 - `state.availableSessions`：本地缓存的会话列表（按照最近更新时间排序）。
 - `state.viewSessionId`：当前查看的会话 ID（可能与 `state.currentSessionId` 不同）。

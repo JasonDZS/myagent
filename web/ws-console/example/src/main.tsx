@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@myagent/ws-console/styles.css';
-import { MyAgentProvider } from '@myagent/ws-console';
-import { MyAgentConsole } from '@myagent/ws-console';
+import { MyAgentProvider, MyAgentConsole, useMyAgent } from '@myagent/ws-console';
+import type { WebSocketMessage } from '@myagent/ws-console';
+import { ConnectionStatus } from '@myagent/ws-console/components/ConnectionStatus';
+import { UserInput } from '@myagent/ws-console/components/UserInput';
 
 const WS_URL = (import.meta as any).env?.VITE_WS_URL || 'ws://localhost:8080';
 
@@ -46,20 +48,141 @@ function SplitView({ children }: { children: [React.ReactNode, React.ReactNode] 
   );
 }
 
-function App() {
+type ThemeOption = 'dark' | 'light';
+
+function ConsolePane({
+  sessionId,
+  onSessionChange,
+  theme,
+  onThemeChange,
+}: {
+  sessionId?: string;
+  onSessionChange: (id: string | undefined) => void;
+  theme: ThemeOption;
+  onThemeChange: (theme: ThemeOption) => void;
+}) {
+  const { state, createSession, sendUserMessage, cancel, requestState, reconnectWithState } = useMyAgent();
+  const sessions = state.availableSessions;
+  const activeId = sessionId;
+  const isConnected = state.connection === 'connected';
+
+  const optionIds = useMemo(() => {
+    const ids = new Set<string>(sessions.map((s) => s.sessionId));
+    if (activeId) ids.add(activeId);
+    return Array.from(ids);
+  }, [sessions, activeId]);
+
+  const handleSelect = useCallback((value: string) => {
+    onSessionChange(value ? value : undefined);
+  }, [onSessionChange]);
+
+  const handleRestore = useCallback(() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ma_state_latest') : null;
+      if (!raw) return;
+      const signed = JSON.parse(raw);
+      const last: any = state.lastEventId ? { last_event_id: state.lastEventId } : { last_seq: state.lastSeq };
+      reconnectWithState(signed, last);
+    } catch (err) {
+      console.error('[restore-state]', err);
+    }
+  }, [reconnectWithState, state.lastEventId, state.lastSeq]);
+
+  const labelFor = useCallback((id: string) => (
+    id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id
+  ), []);
+
+  const canSend = Boolean(activeId) && isConnected;
+
   return (
-    <MyAgentProvider wsUrl={WS_URL} autoReconnect>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div className="ma-header">
+        <div className="ma-header-main">
+          <ConnectionStatus status={state.connection} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div className="ma-session-switcher">
+              <label className="ma-session-label" htmlFor="ma-session-select">会话</label>
+              <select
+                id="ma-session-select"
+                className="ma-select"
+                value={activeId ?? ''}
+                onChange={(ev) => handleSelect(ev.target.value)}
+              >
+                <option value="">请选择会话</option>
+                {optionIds.map((id) => (
+                  <option key={id} value={id} title={id}>
+                    {labelFor(id)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="ma-session-switcher">
+              <label className="ma-session-label" htmlFor="ma-theme-select">主题</label>
+              <select
+                id="ma-theme-select"
+                className="ma-select"
+                value={theme}
+                onChange={(ev) => onThemeChange(ev.target.value as ThemeOption)}
+              >
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="ma-actions">
+          <button className="ma-btn" onClick={() => createSession()}>新建会话</button>
+          <button className="ma-btn" onClick={() => requestState()} disabled={!activeId}>导出状态</button>
+          <button className="ma-btn" onClick={handleRestore} disabled={!activeId}>恢复状态</button>
+        </div>
+      </div>
+      {!activeId && (
+        <div className="ma-banner">
+          <span className="ma-muted">请选择上方会话或点击“新建会话”开始</span>
+        </div>
+      )}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <MyAgentConsole theme={theme} />
+      </div>
+      <UserInput
+        onSend={(text) => {
+          if (!canSend) return;
+          sendUserMessage(text);
+        }}
+        disabled={!canSend}
+        generating={!!state.generating}
+        onCancel={() => cancel()}
+      />
+    </div>
+  );
+}
+
+function App() {
+  const [activeSessionId, setActiveSessionId] = useState<string | undefined>(undefined);
+  const [theme, setTheme] = useState<ThemeOption>('dark');
+
+  const handleEvent = useCallback((event: WebSocketMessage) => {
+    if (event.event === 'agent.session_created' && event.session_id) {
+      setActiveSessionId(event.session_id);
+    }
+  }, []);
+
+  return (
+    <MyAgentProvider wsUrl={WS_URL} autoReconnect sessionId={activeSessionId} onEvent={handleEvent}>
       <SplitView>
         {[
           <div key="left" />, // 空白左栏
-          <div key="right" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <MyAgentConsole />
-          </div>,
-        ] as any}
+          <ConsolePane
+            key="right"
+            sessionId={activeSessionId}
+            onSessionChange={setActiveSessionId}
+            theme={theme}
+            onThemeChange={setTheme}
+          />,
+        ] as [React.ReactNode, React.ReactNode]}
       </SplitView>
     </MyAgentProvider>
   );
 }
 
 createRoot(document.getElementById('root')!).render(<App />);
-

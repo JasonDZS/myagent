@@ -52,6 +52,7 @@ interface MyAgentProviderProps {
     autoReconnect?: boolean;
     showSystemLogs?: boolean;
     onEvent?: (m: WebSocketMessage) => void;
+    sessionId?: string;
     children?: any;
 }
 

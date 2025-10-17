@@ -9,6 +9,7 @@ Features
 - Drop-in `<MyAgentConsole />` for quick integration
 - Built-in dark/light themes configurable via prop
 - Local session cache via Zustand with per-session history switching
+- Externally controlled sessions via the `sessionId` provider prop
 
 Installation
 ```
@@ -27,12 +28,21 @@ yarn add lucide-react
 
 Usage (basic)
 ```tsx
+import { useCallback, useState } from 'react';
 import '@myagent/ws-console/styles.css';
-import { MyAgentProvider, MyAgentConsole } from '@myagent/ws-console';
+import { MyAgentProvider, MyAgentConsole, type WebSocketMessage } from '@myagent/ws-console';
 
 export default function App() {
+  const [sessionId, setSessionId] = useState<string>();
+
+  const handleEvent = useCallback((event: WebSocketMessage) => {
+    if (event.event === 'agent.session_created' && event.session_id) {
+      setSessionId(event.session_id);
+    }
+  }, []);
+
   return (
-    <MyAgentProvider wsUrl="ws://localhost:8080">
+    <MyAgentProvider wsUrl="ws://localhost:8080" sessionId={sessionId} onEvent={handleEvent}>
       <div style={{ height: 600 }}>
         <MyAgentConsole />
       </div>
@@ -41,6 +51,8 @@ export default function App() {
 }
 ```
 
+`MyAgentConsole` renders the message list and confirmation prompts for the active session. Compose your own header, composer, and session picker (see `example/` for a full shell) using the commands exposed through `useMyAgent()`.
+
 Appearance
 - `MyAgentConsole` accepts a `theme` prop (`'dark' | 'light'`, defaults to `'dark'`).
 - CSS variables (`--ma-*`) drive the styling, so you can override colors or define additional themes by wrapping the root element with custom classes.
@@ -48,7 +60,7 @@ Appearance
 
 Sessions & history
 - Incoming messages (and local user messages) are cached per session in a persisted Zustand store.
-- The header shows a session selector once more than one session exists; choosing an older session switches the message list to that history and temporarily disables the composer.
+- Pass the desired `sessionId` into `MyAgentProvider`; switching that prop changes which history `MyAgentConsole` displays.
 - `useMyAgent()` exposes `state.availableSessions`, `state.viewSessionId`, and a `selectSession(sessionId)` helper so you can build custom session pickers.
 
 Local example (split view)
@@ -67,7 +79,7 @@ Hook API
 import { MyAgentProvider, useMyAgent } from '@myagent/ws-console';
 
 function CustomUI() {
-  const { state, selectSession, sendUserMessage, cancel, solveTasks, cancelTask, restartTask, replan, requestState, reconnectWithState } = useMyAgent();
+  const { state, createSession, selectSession, sendUserMessage, cancel, solveTasks, cancelTask, restartTask, replan, requestState, reconnectWithState } = useMyAgent();
 
   return (
     <aside>
@@ -82,6 +94,7 @@ function CustomUI() {
           </li>
         ))}
       </ul>
+      <button onClick={() => createSession()}>新建会话</button>
     </aside>
   );
   // ...
