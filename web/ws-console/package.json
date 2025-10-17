@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Reusable React component and hooks for MyAgent WebSocket protocol (plan → solve).",
   "license": "MIT",
-  "main": "dist/index.cjs.js",
-  "module": "dist/index.esm.js",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "files": [
@@ -14,8 +14,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.esm.js",
-      "require": "./dist/index.cjs.js"
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
     },
     "./styles.css": "./dist/styles.css"
   },
