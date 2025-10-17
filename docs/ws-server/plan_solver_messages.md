@@ -107,6 +107,28 @@
 
 ---
 
+### 3.1 事件常量（服务端）
+
+为便于前后端对齐，服务端将 Plan→Solve 流水线事件分组为常量（基础事件名，可能被会话代理加上可选前缀 `event_namespace`）：
+
+- PlanEvents：`plan.start`、`plan.completed`、`plan.cancelled`、`plan.coercion_error`
+- SolverEvents：`solver.start`、`solver.completed`、`solver.cancelled`、`solver.restarted`
+- AggregateEvents：`aggregate.start`、`aggregate.completed`
+- PipelineEvents：`pipeline.completed`
+
+导入示例（Python）：
+```python
+from myagent.ws.events import PlanEvents, SolverEvents, AggregateEvents, PipelineEvents
+
+# 发送示例（伪代码）
+emit(PlanEvents.COMPLETED, {...})
+emit(SolverEvents.COMPLETED, {...})
+```
+
+兼容性说明：`AgentEvents` 仅承载 `agent.*` 事件，并提供兼容别名：`PLAN_CANCELLED`、`SOLVER_CANCELLED`、`SOLVER_RESTARTED` 分别指向上述分组中的对应事件。
+
+---
+
 ## 4. 计划确认（可选，可编辑任务）
 
 服务端启用计划确认时，`plan.completed` 后会推送：

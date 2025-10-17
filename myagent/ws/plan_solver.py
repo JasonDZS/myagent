@@ -19,7 +19,14 @@ from pydantic import Field
 from myagent.logger import logger
 from myagent.schema import AgentState
 from myagent.ws import get_ws_session_context, send_websocket_message
-from myagent.ws.events import create_event, AgentEvents
+from myagent.ws.events import (
+    create_event,
+    AgentEvents,
+    PlanEvents,
+    SolverEvents,
+    AggregateEvents,
+    PipelineEvents,
+)
 from myagent.agent.base import BaseAgent
 from myagent.stats import get_stats_manager
 
@@ -198,7 +205,7 @@ class PlanSolverPipeline:
 
     async def plan(self, question: str) -> PlanContext:
         """Run planning stage and emit plan events, returning a PlanContext."""
-        await self._notify("plan.start", {"question": question})
+        await self._notify(PlanEvents.START, {"question": question})
 
         plan_agent = self.planner.build_agent()
         plan_request = self.planner.build_request(question)
@@ -253,7 +260,7 @@ class PlanSolverPipeline:
             metrics_snapshot = None
 
         await self._notify(
-            "plan.completed",
+            PlanEvents.COMPLETED,
             {
                 "tasks": tasks,
                 "plan_summary": plan_summary,
@@ -281,7 +288,7 @@ class PlanSolverPipeline:
             metrics_snapshot = None
 
         await self._notify(
-            "pipeline.completed",
+            PipelineEvents.COMPLETED,
             {
                 "context": context,
                 "solver_results": solver_results,
@@ -315,7 +322,7 @@ class PlanSolverPipeline:
 
             async def _run() -> SolverRunResult:
                 # Emit start only when the task actually acquires a slot
-                await self._notify("solver.start", {"task": task})
+                await self._notify(SolverEvents.START, {"task": task})
                 agent = self.solver.build_agent(task, context=context)
                 request = self.solver.build_request(task, context=context)
                 solver_output = await agent.run(request)
@@ -364,7 +371,7 @@ class PlanSolverPipeline:
                     # statistics is a List[Dict] (per-call records)
                     sanitized_result["statistics"] = statistics
                 await self._notify(
-                    "solver.completed",
+                    SolverEvents.COMPLETED,
                     {"task": task, "result": sanitized_result},
                 )
                 return result
@@ -422,7 +429,7 @@ class PlanSolverPipeline:
                         self._restart_requests.discard(rkey)
                         continue
                 if not is_active:
-                    await self._notify("solver.restarted", {"task": task_obj})
+                    await self._notify(SolverEvents.RESTARTED, {"task": task_obj})
                     await _launch(task_obj)
                     async with self._lock:
                         self._restart_requests.discard(rkey)
@@ -459,7 +466,7 @@ class PlanSolverPipeline:
                     res: SolverRunResult = await done_fut
                 except asyncio.CancelledError:
                     # Cancelled: emit event and continue; restart is handled above
-                    await self._notify("solver.cancelled", {"task": task_obj})
+                    await self._notify(SolverEvents.CANCELLED, {"task": task_obj})
                     continue
                 except Exception as exc:  # pragma: no cover - safeguard
                     logger.error("Solver task failed for %s: %s", key_for_done, exc)
@@ -524,13 +531,13 @@ class PlanSolverPipeline:
         if not self.aggregator:
             return None
         await self._notify(
-            "aggregate.start", {"context": context, "solver_results": results}
+            AggregateEvents.START, {"context": context, "solver_results": results}
         )
         aggregate = self.aggregator(context, results)
         if inspect.isawaitable(aggregate):
             aggregate = await aggregate  # type: ignore[assignment]
         await self._notify(
-            "aggregate.completed",
+            AggregateEvents.COMPLETED,
             {"context": context, "solver_results": results, "output": aggregate},
         )
         return aggregate
@@ -693,7 +700,7 @@ class PlanSolverSessionAgent(BaseAgent):
                 try:
                     context = await self._planning_task
                 except asyncio.CancelledError:
-                    await self._emit_event(AgentEvents.PLAN_CANCELLED, {"reason": "cancelled"})
+                    await self._emit_event(PlanEvents.CANCELLED, {"reason": "cancelled"})
                     if self._replan_requested:
                         # Clear flag and re-run planning
                         self._replan_requested = False
@@ -727,7 +734,7 @@ class PlanSolverSessionAgent(BaseAgent):
                         edited_tasks = list(self.pipeline.planner.coerce_tasks(edited_tasks))
                     except Exception as exc:
                         await self._emit_event(
-                            "plan.coercion_error",
+                            PlanEvents.COERCION_ERROR,
                             {
                                 "message": "Failed to coerce edited tasks; aborting.",
                                 "error": str(exc),
@@ -770,7 +777,7 @@ class PlanSolverSessionAgent(BaseAgent):
     async def _progress_callback(self, event: str, payload: dict[str, Any]) -> None:
         content = self._make_serializable(payload)
 
-        if not self.broadcast_tasks and event == "plan.completed":
+        if not self.broadcast_tasks and event == PlanEvents.COMPLETED:
             content = {k: v for k, v in content.items() if k != "tasks"}
 
         await self._emit_event(event, content)
@@ -909,7 +916,7 @@ class PlanSolverSessionAgent(BaseAgent):
             coerced_tasks = list(self.pipeline.planner.coerce_tasks(raw_tasks))
         except Exception as exc:
             await self._emit_event(
-                "plan.coercion_error",
+                PlanEvents.COERCION_ERROR,
                 {
                     "message": "Failed to coerce client-provided tasks; aborting.",
                     "error": str(exc),
@@ -1025,7 +1032,7 @@ class PlanSolverSessionAgent(BaseAgent):
             return False
 
         # Emit solver.restarted for visibility
-        await self._emit_event(AgentEvents.SOLVER_RESTARTED, {"task": target_task})
+        await self._emit_event(SolverEvents.RESTARTED, {"task": target_task})
 
         # Ensure progress callback active
         self.pipeline.set_progress_callback(self._progress_callback)

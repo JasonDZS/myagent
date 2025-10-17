@@ -16,6 +16,7 @@ import sys
 from typing import Any, Optional
 
 import websockets
+from myagent.ws.events import SolverEvents
 
 
 def _json_dumps(payload: dict[str, Any]) -> str:
@@ -145,7 +146,7 @@ async def run_client(
 
                 elif not keep_alive and session_id:
                     # In direct-task mode, close after expected solver.completed count
-                    if event_type == "solver.completed" and expected_solver_completeds:
+                    if event_type == SolverEvents.COMPLETED and expected_solver_completeds:
                         seen_solver_completeds += 1
                         if seen_solver_completeds >= expected_solver_completeds:
                             print("🛑 All solver.completed received. Closing connection.")

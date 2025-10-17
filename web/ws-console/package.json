@@ -1,0 +1,40 @@
+{
+  "name": "@myagent/ws-console",
+  "version": "0.1.0",
+  "description": "Reusable React component and hooks for MyAgent WebSocket protocol (plan → solve).",
+  "license": "MIT",
+  "main": "dist/index.cjs.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.esm.js",
+      "require": "./dist/index.cjs.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean && cp src/styles.css dist/styles.css",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --sourcemap --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=17 <19",
+    "react-dom": ">=17 <19"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.33",
+    "@types/react-dom": "^18.2.14",
+    "tsup": "^8.0.1",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0"
+  }
+}

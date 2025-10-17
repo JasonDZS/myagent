@@ -41,8 +41,39 @@ class UserEvents:
     ACK = "user.ack"
 
 
+class PlanEvents:
+    """Plan stage events (base names; may be namespaced)."""
+
+    START = "plan.start"
+    COMPLETED = "plan.completed"
+    CANCELLED = "plan.cancelled"
+    COERCION_ERROR = "plan.coercion_error"
+
+
+class SolverEvents:
+    """Solver stage events (per-task)."""
+
+    START = "solver.start"
+    COMPLETED = "solver.completed"
+    CANCELLED = "solver.cancelled"
+    RESTARTED = "solver.restarted"
+
+
+class AggregateEvents:
+    """Aggregation stage events."""
+
+    START = "aggregate.start"
+    COMPLETED = "aggregate.completed"
+
+
+class PipelineEvents:
+    """Pipeline-level events."""
+
+    COMPLETED = "pipeline.completed"
+
+
 class AgentEvents:
-    """Agent event types"""
+    """Agent event types (agent.*) and legacy aliases."""
 
     THINKING = "agent.thinking"
     TOOL_CALL = "agent.tool_call"
@@ -58,10 +89,11 @@ class AgentEvents:
     LLM_MESSAGE = "agent.llm_message"
     STATE_EXPORTED = "agent.state_exported"
     STATE_RESTORED = "agent.state_restored"
-    # Extended plan/solver control events
-    PLAN_CANCELLED = "plan.cancelled"
-    SOLVER_CANCELLED = "solver.cancelled"
-    SOLVER_RESTARTED = "solver.restarted"
+
+    # Backward-compatible aliases for plan/solver control events
+    PLAN_CANCELLED = PlanEvents.CANCELLED
+    SOLVER_CANCELLED = SolverEvents.CANCELLED
+    SOLVER_RESTARTED = SolverEvents.RESTARTED
 
 
 class SystemEvents:
@@ -71,6 +103,121 @@ class SystemEvents:
     NOTICE = "system.notice"
     HEARTBEAT = "system.heartbeat"
     ERROR = "system.error"
+
+
+def _truncate(text: str, limit: int = 160) -> str:
+    try:
+        return text if len(text) <= limit else text[: limit - 1] + "…"
+    except Exception:
+        return text
+
+
+def _derive_show_content(event_type: str, content: Any, metadata: dict[str, Any] | None) -> str | None:
+    """Produce a human‑readable summary for the event payload.
+
+    The goal is to avoid raw JSON for end users.
+    """
+    try:
+        md = metadata or {}
+        et = event_type or ""
+
+        # System
+        if et == SystemEvents.CONNECTED:
+            return "已连接到服务器"
+        if et == SystemEvents.ERROR:
+            return f"系统错误：{content if isinstance(content, str) else '发生错误'}"
+        if et == SystemEvents.HEARTBEAT:
+            return "心跳"
+        if et == SystemEvents.NOTICE:
+            return str(content) if isinstance(content, str) else "通知"
+
+        # Agent
+        if et == AgentEvents.SESSION_CREATED:
+            return "会话创建成功"
+        if et == AgentEvents.THINKING:
+            return "正在思考…"
+        if et == AgentEvents.PARTIAL_ANSWER:
+            if isinstance(content, str):
+                return _truncate(content, 200)
+            return "生成中…"
+        if et == AgentEvents.FINAL_ANSWER:
+            if isinstance(content, str):
+                return content
+            return "已生成答案"
+        if et == AgentEvents.USER_CONFIRM:
+            scope = (md.get("scope") if isinstance(md, dict) else None) or "plan"
+            tasks = md.get("tasks") if isinstance(md, dict) else None
+            count = len(tasks) if isinstance(tasks, list) else None
+            summary = md.get("plan_summary") if isinstance(md, dict) else None
+            if scope == "plan":
+                base = f"请确认规划（{count} 个任务）" if count is not None else "请确认规划"
+                if isinstance(summary, str) and summary.strip():
+                    base += f"：{_truncate(summary.strip(), 120)}"
+                return base
+            return "请确认操作"
+        if et == AgentEvents.TOOL_CALL:
+            return "执行工具调用…"
+        if et == AgentEvents.TOOL_RESULT:
+            return "工具返回结果"
+        if et == AgentEvents.ERROR:
+            return f"Agent 错误：{content if isinstance(content, str) else '发生错误'}"
+        if et == AgentEvents.TIMEOUT:
+            return "执行超时"
+        if et == AgentEvents.INTERRUPTED:
+            return "执行已中断"
+
+        # Plan
+        if et == PlanEvents.START:
+            if isinstance(content, dict) and isinstance(content.get("question"), str):
+                return f"开始规划：{_truncate(content['question'], 120)}"
+            return "开始规划"
+        if et == PlanEvents.COMPLETED:
+            tasks = None
+            if isinstance(content, dict):
+                tasks = content.get("tasks")
+            count = len(tasks) if isinstance(tasks, list) else None
+            base = f"规划完成（{count} 个任务）" if count is not None else "规划完成"
+            if isinstance(content, dict) and isinstance(content.get("plan_summary"), str):
+                base += f"：{_truncate(content['plan_summary'], 120)}"
+            return base
+        if et == PlanEvents.CANCELLED:
+            return "规划已取消"
+
+        # Solver
+        if et == SolverEvents.START:
+            task = content.get("task") if isinstance(content, dict) else None
+            title = None
+            if isinstance(task, dict):
+                title = task.get("title") or task.get("name")
+            elif hasattr(task, "title"):
+                title = getattr(task, "title")
+            return f"开始求解：{title}" if title else "开始求解"
+        if et == SolverEvents.COMPLETED:
+            task = content.get("task") if isinstance(content, dict) else None
+            title = None
+            if isinstance(task, dict):
+                title = task.get("title") or task.get("name")
+            elif hasattr(task, "title"):
+                title = getattr(task, "title")
+            return f"求解完成：{title}" if title else "求解完成"
+        if et == SolverEvents.CANCELLED:
+            return "求解已取消"
+        if et == SolverEvents.RESTARTED:
+            return "任务已重启"
+
+        # Aggregate
+        if et == AggregateEvents.START:
+            return "开始聚合"
+        if et == AggregateEvents.COMPLETED:
+            return "聚合完成"
+
+        # Pipeline
+        if et == PipelineEvents.COMPLETED:
+            return "流水线完成"
+
+        return None
+    except Exception:
+        return None
 
 
 def create_event(
@@ -89,6 +236,14 @@ def create_event(
         event["content"] = content
     if metadata:
         event["metadata"] = metadata
+
+    # Attach readable summary unless explicitly provided in kwargs
+    if "show_content" in kwargs:
+        pass
+    else:
+        sc = _derive_show_content(event_type, content, metadata)
+        if sc is not None:
+            event["show_content"] = sc
 
     event.update(kwargs)
     return event

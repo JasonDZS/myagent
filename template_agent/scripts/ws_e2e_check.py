@@ -24,9 +24,9 @@ import argparse
 import asyncio
 import json
 import sys
-from dataclasses import dataclass
 from typing import Any
 from urllib import request, error as urlerror
+from myagent.ws.events import PlanEvents, SolverEvents, AggregateEvents, PipelineEvents
 
 
 # -----------------------------
@@ -155,10 +155,10 @@ async def run_ws_flow(ws_url: str, *, backend: str, template_name: str, kb_name:
                     }
                 )
 
-            elif event == "plan.start":
+            elif event == PlanEvents.START:
                 print("[·] Planning started")
 
-            elif event == "plan.completed":
+            elif event == PlanEvents.COMPLETED:
                 tasks = (content or {}).get("tasks") if isinstance(content, dict) else None
                 print(f"[✓] Plan completed: {len(tasks or [])} tasks")
 
@@ -168,17 +168,17 @@ async def run_ws_flow(ws_url: str, *, backend: str, template_name: str, kb_name:
                 print(f"[?] User confirm requested (scope={scope or 'unknown'}) → auto-confirm")
                 await _send({"event": "user.response", "step_id": step_id, "content": {"confirmed": True}})
 
-            elif event == "solver.start":
+            elif event == SolverEvents.START:
                 print("[·] Solver started for a section")
 
-            elif event == "solver.completed":
+            elif event == SolverEvents.COMPLETED:
                 summary = (content or {}).get("summary") if isinstance(content, dict) else None
                 if summary:
                     print(f"[✓] Solver completed: {summary}")
                 else:
                     print("[✓] Solver completed")
 
-            elif event == "aggregate.completed":
+            elif event == AggregateEvents.COMPLETED:
                 out = (content or {}).get("output") if isinstance(content, dict) else None
                 report = (out or {}).get("report") if isinstance(out, dict) else None
                 rep_content = (report or {}).get("content") if isinstance(report, dict) else None
@@ -186,7 +186,7 @@ async def run_ws_flow(ws_url: str, *, backend: str, template_name: str, kb_name:
                     report_preview = rep_content[:400]
                 print("[✓] Aggregate completed")
 
-            elif event == "pipeline.completed":
+            elif event == PipelineEvents.COMPLETED:
                 print("[✓] Pipeline completed")
 
             elif event == "agent.final_answer":
@@ -247,4 +247,3 @@ if __name__ == "__main__":
         sys.exit(f"[x] Network error: {e}")
     except Exception as e:
         sys.exit(f"[x] Failed: {e}")
-
