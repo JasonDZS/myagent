@@ -26,9 +26,6 @@ from .tool import ToolCollection
 from .tool.base_tool import ToolResult
 from .type import *
 
-# WebSocket Management System
-from .manager import AgentManager, ServiceRegistry, ConnectionRouter, HealthMonitor
-
 # Deep Agents Capabilities
 from .middleware import DeepAgentMiddleware, PlanningMiddleware, FilesystemMiddleware, SubAgentMiddleware
 
