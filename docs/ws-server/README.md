@@ -13,6 +13,7 @@
 - [**用户确认机制**](./user-confirmation.md) - 危险操作的确认流程实现
 - [**客户端状态管理**](./client-state-management.md) - 会话状态的客户端存储和恢复
 - [**数据可视化集成**](./visualization-integration.md) - ECharts图表可视化支持
+- [**Plan & Solve 消息指南**](./plan_solver_messages.md) - 规划/求解流水线与细粒度控制
 
 ### 🎯 框架集成
 - [**React 集成**](./react-integration.md) - 完整的React Hook和组件实现
@@ -72,6 +73,13 @@
 - 敏感信息自动清理
 - 状态大小限制（100KB）
 
+### 🛡️ 可靠性与流控（新增）
+- 事件带单调 `seq` 与全局唯一 `event_id`（`<connectionId>-<seq>`）
+- 客户端通过 `user.ack` 回传 `last_event_id` 或 `last_seq`，服务端据此裁剪缓冲
+- 断线重连可带上次 `last_event_id/last_seq`，服务端按会话缓冲做“差量回放”（最多200条）
+- 每连接单写者出站通道与有界队列，避免并发 `send()` 与无界内存
+- 高频事件合并：`agent.partial_answer`、`agent.llm_message` 默认75ms窗口仅保留最新
+
 ### 📱 多端适配
 - 响应式设计，支持移动端
 - 完整的键盘快捷键支持
@@ -81,12 +89,18 @@
 
 ### 用户事件 (发送)
 ```javascript
-user.create_session        // 创建会话
-user.message              // 发送消息  
-user.response             // 确认响应
-user.cancel               // 取消执行
-user.request_state        // 请求导出状态
-user.reconnect_with_state // 使用状态重连
+user.create_session         // 创建会话
+user.message               // 发送消息
+user.solve_tasks           // 直接提交任务给求解器（跳过规划）
+user.response              // 确认响应（含 step_id）
+user.cancel                // 取消当前执行
+user.cancel_task           // 取消指定任务（细粒度）
+user.restart_task          // 重启指定任务（细粒度）
+user.cancel_plan           // 取消规划阶段
+user.replan                // 重新规划（会话空闲或运行内重计划）
+user.request_state         // 请求导出状态
+user.reconnect_with_state  // 使用状态重连
+user.ack                   // 客户端ACK，携带 last_event_id 或 last_seq
 ```
 
 ### Agent事件 (接收)
@@ -101,6 +115,10 @@ agent.final_answer     // 最终回答
 agent.state_exported   // 状态导出完成
 agent.state_restored   // 状态恢复完成
 agent.error           // 执行错误
+agent.llm_message     // LLM原始消息（调试/可视化）
+plan.cancelled        // 规划被取消
+solver.cancelled      // 单任务被取消
+solver.restarted      // 单任务已重启
 ```
 
 ### 系统事件 (接收)
@@ -120,7 +138,34 @@ interface WebSocketMessage {
   step_id?: string;        // 步骤ID (用于请求响应关联)
   content?: string | object; // 消息内容
   metadata?: object;       // 元数据
+  // 以下字段由服务器下行事件附带，用于可靠性：
+  seq?: number;            // 连接内单调序号
+  event_id?: string;       // 全局唯一事件ID: <connectionId>-<seq>
 }
+```
+
+### 客户端 ACK 建议
+- 每收到若干条事件或每200ms发送一次 ACK（节流即可）
+- 优先使用 `last_event_id`，无法获取时使用 `last_seq`
+
+示例：
+```javascript
+// 维护最近收到的 event_id/seq
+let lastEventId = null;
+let lastSeq = 0;
+
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  if (typeof msg.event_id === 'string') lastEventId = msg.event_id;
+  if (typeof msg.seq === 'number') lastSeq = msg.seq;
+};
+
+// 定时节流 ACK（200ms）
+setInterval(() => {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const content = lastEventId ? { last_event_id: lastEventId } : { last_seq: lastSeq };
+  ws.send(JSON.stringify({ event: 'user.ack', content }));
+}, 200);
 ```
 
 ## 🚀 快速示例
@@ -152,6 +197,21 @@ ws.onmessage = (event) => {
         }));
     }
 };
+```
+
+### 直接任务模式（跳过规划）
+```javascript
+// 在收到 agent.session_created 后：
+ws.send(JSON.stringify({
+  event: 'user.solve_tasks',
+  session_id: data.session_id, // 或缓存的 sessionId
+  content: {
+    tasks: [{ id: 1, title: '示例', objective: '...' }],
+    question: '可选，问题背景',
+    plan_summary: '可选，计划摘要'
+  }
+}));
+// 仅会收到 solver.start / solver.completed 等求解相关事件
 ```
 
 ### React Hook 使用

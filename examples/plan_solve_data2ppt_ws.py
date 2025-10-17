@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from myagent.agent.plan_solver import create_plan_solver_session_agent
+from myagent.ws.plan_solver import create_plan_solver_session_agent
 from myagent.ws import AgentWebSocketServer
 
 # Use the implementation under slide_agent_ws for better structure and reusability

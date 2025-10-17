@@ -123,6 +123,45 @@
 </html>
 ```
 
+### 可选：直接任务模式（跳过规划）
+
+```javascript
+// 在收到 agent.session_created 后，直接提交任务给求解器：
+ws.send(JSON.stringify({
+  event: 'user.solve_tasks',
+  session_id: sessionId,
+  content: {
+    tasks: [{ id: 1, title: '示例页', objective: '展示销售概览' }],
+    // question: '可选，问题背景',
+    // plan_summary: '可选，计划摘要'
+  }
+}));
+// 将收到 solver.start / solver.completed 等求解相关事件
+```
+
+### 可选：客户端 ACK（推荐）
+
+为提高可靠性与断线差量回放效果，建议按节流策略回传 ACK：
+
+```javascript
+let lastEventId = null; // 从下行消息的 event_id 更新
+let lastSeq = 0;        // 从下行消息的 seq 更新
+
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  if (typeof msg.event_id === 'string') lastEventId = msg.event_id;
+  if (typeof msg.seq === 'number') lastSeq = msg.seq;
+  handleMessage(msg);
+};
+
+// 每 200ms 节流发送一次 ACK（也可每 N 条事件发送一次）
+setInterval(() => {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const content = lastEventId ? { last_event_id: lastEventId } : { last_seq: lastSeq };
+  ws.send(JSON.stringify({ event: 'user.ack', content }));
+}, 200);
+```
+
 ## 2. Node.js 版本
 
 ### 安装依赖
@@ -361,10 +400,13 @@ if __name__ == "__main__":
 
 ```bash
 # 使用示例 Agent
-uv run python -m myagent.cli.server server examples/ws_weather_agent.py --port 8080
+uv run python -m myagent.cli.server server examples/weather_agent.py --port 8080
 
 # 或使用自定义 Agent
 uv run python -m myagent.cli.server server your_agent.py --host localhost --port 8080
+
+# 等价脚本（如已在 PATH 中）
+scripts/myagent-ws server examples/weather_agent.py --port 8080
 ```
 
 ### 服务器端代码示例
@@ -542,6 +584,7 @@ class StateManager:
 - 学习 [用户确认机制](./user-confirmation.md) - 处理需要用户确认的操作
 - 查看 [React集成示例](./react-integration.md) - 在React应用中使用
 - 了解 [数据可视化集成](./visualization-integration.md) - 图表展示功能
+- 熟悉 [Plan & Solve 消息指南](./plan_solver_messages.md) - 规划/求解流水线与细粒度控制
 
 ## 故障排除
 

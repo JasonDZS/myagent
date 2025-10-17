@@ -964,6 +964,46 @@ class SummarizeFilenamesTool(BaseTool):
             clean_summary = str(summary_text).strip()
             summaries.append({"file": fn, "summary": clean_summary})
 
+            # Forward small-model call usage into the planner's statistics when possible
+            try:
+                # Get last small-LLM call record
+                last_rec = llm.call_history[-1] if getattr(llm, "call_history", None) else None
+                if isinstance(last_rec, dict):
+                    md = last_rec.get("metadata") if isinstance(last_rec.get("metadata"), dict) else {}
+                    in_tok = last_rec.get("input_tokens", md.get("input_tokens", 0))
+                    out_tok = last_rec.get("output_tokens", md.get("output_tokens", 0))
+
+                    # Try to append a corresponding call onto the current agent's llm
+                    try:
+                        from myagent.ws import get_ws_session_context  # type: ignore
+
+                        sess = get_ws_session_context()
+                        agent = getattr(sess, "agent", None)
+                        parent_llm = getattr(agent, "llm", None)
+                        if parent_llm is not None and hasattr(parent_llm, "record_call"):
+                            # Record a synthetic call on the parent agent to make stats include SLM usage
+                            parent_llm.record_call(
+                                call_type=str(last_rec.get("call_type") or "ask"),
+                                metadata={
+                                    "input_tokens": int(in_tok) if isinstance(in_tok, (int, float)) else 0,
+                                    "output_tokens": int(out_tok) if isinstance(out_tok, (int, float)) else 0,
+                                    "stream": bool(md.get("stream", False)),
+                                    "tool_name": self.name,
+                                    "slm_model": model_name,
+                                },
+                                extra={
+                                    # Preserve helpful hints if present
+                                    "response_length": last_rec.get("response_length"),
+                                    "messages_count": last_rec.get("messages_count"),
+                                },
+                            )
+                    except Exception:
+                        # Ignore if no WS session context is available or recording fails
+                        pass
+            except Exception:
+                # Never break tool execution due to statistics forwarding
+                pass
+
         pretty_text = "\n".join([f"- {it['file']}: {it['summary']}" for it in summaries])
         json_text = json.dumps({"summaries": summaries}, ensure_ascii=False)
         return ToolResult(output=pretty_text, system=json_text)

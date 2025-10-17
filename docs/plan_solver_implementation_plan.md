@@ -38,7 +38,7 @@
 
 ## 4. 实现步骤
 1. **封装 Agent**
-   - 在 `myagent/agent/plan_solver.py` 新增 `PlanSolverSessionAgent`
+   - 在 `myagent/ws/plan_solver.py` 新增 `PlanSolverSessionAgent`
    - 支持自定义事件名称、消息体模板
 2. **事件集成**
    - 在 session agent 中获取当前 WebSocket（`get_ws_session_context()`）
@@ -71,7 +71,7 @@
 - 更新后的架构文档与使用指南
 
 ## 8. 实施进展（2025-10-10）
-- ✅ `myagent/agent/plan_solver.py` 新增 `PlanSolverSessionAgent` 与进度回调机制，可选 `progress_callback` 触发 `plan.*` / `solver.*` / `aggregate.*` 事件。
+- ✅ `myagent/ws/plan_solver.py` 新增 `PlanSolverSessionAgent` 与进度回调机制，可选 `progress_callback` 触发 `plan.*` / `solver.*` / `aggregate.*` 事件。
 - ✅ `create_plan_solver_session_agent` 封装 WebSocket 友好的 agent。
 - ✅ `examples/plan_solve_data2ppt_ws.py` 提供 WebSocket 服务器入口，默认事件名为通用的 `plan.start`/`solver.completed`/`aggregate.completed` 等。
 - ✅ `PlanSolverPipeline` 支持 `set_progress_callback`，在规划完成、求解开始与完成、聚合阶段推送上下文数据。

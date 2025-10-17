@@ -40,7 +40,12 @@ type EventCategory =
 
 #### Session ID 覆盖规则
 - ✅ **包含 session_id**: 所有 `agent.*` 事件
-- ❌ **不包含 session_id**: 所有 `system.*` 事件
+- ➕ **可包含 session_id**: 与特定会话相关的 `system.*` 事件（例如 `system.notice`）
+- ❌ **通常不包含 session_id**: 与会话无关的连接级系统事件（如 `system.connected`、`system.heartbeat`）
+
+#### 可靠性标识（服务器下行）
+- 所有服务器下行事件都会注入单调序号 `seq` 和全局唯一 `event_id`（`<connectionId>-<seq>`）
+- 事件的 `metadata.connection_id` 会自动填充为当前连接 ID
 
 ### 3. 消息格式
 
@@ -55,6 +60,9 @@ interface WebSocketMessage {
   step_id?: string;        // 步骤 ID (用于关联请求响应)
   content?: string | object; // 消息内容
   metadata?: object;       // 元数据
+  // 服务器下行事件包含：
+  seq?: number;            // 连接内单调序号
+  event_id?: string;       // 事件唯一ID: <connectionId>-<seq>
 }
 ```
 
@@ -68,7 +76,12 @@ interface WebSocketMessage {
 | `user.message` | 发送用户消息 | `event`, `session_id`, `content` |
 | `user.response` | 用户响应确认 | `event`, `session_id`, `step_id`, `content` |
 | `user.cancel` | 取消当前执行 | `event`, `session_id` |
-| `user.reconnect` | 重连会话 | `event`, `session_id` |
+| `user.solve_tasks` | 直接提交任务给求解器（跳过规划） | `event`, `session_id`, `content.tasks` |
+| `user.cancel_task` | 取消指定任务 | `event`, `session_id`, `content.task_id` |
+| `user.restart_task` | 重新执行指定任务 | `event`, `session_id`, `content.task_id` |
+| `user.cancel_plan` | 取消规划阶段 | `event`, `session_id` |
+| `user.replan` | 重新规划（会话空闲或运行内重计划） | `event`, `session_id`（可选 `content.question`） |
+| `user.ack` | 客户端 ACK（去重/回放对齐） | `event`, `content.last_event_id` 或 `content.last_seq` |
 
 ### Agent 事件 (agent.*)
 
@@ -85,6 +98,9 @@ interface WebSocketMessage {
 | `agent.error` | Agent 执行错误 | ✅ |
 | `agent.interrupted` | 执行被中断 | ✅ |
 | `agent.session_end` | 会话结束 | ✅ |
+| `plan.cancelled` | 规划被取消 | ✅ |
+| `solver.cancelled` | 单任务被取消 | ✅ |
+| `solver.restarted` | 单任务已重启 | ✅ |
 
 ### 系统事件 (system.*)
 
@@ -127,6 +143,8 @@ sequenceDiagram
     A-->>WS: agent.final_answer
     WS-->>F: 最终回答
 ```
+
+> 直接任务模式：当客户端已具备任务时，可使用 `user.solve_tasks` 直接进入求解阶段（将收到 `solver.start` / `solver.completed` 等求解相关事件；不经过 `plan.completed/aggregate.*`）。详见 [Plan & Solve 消息指南](./plan_solver_messages.md)。
 
 ### 工具调用流程
 
@@ -201,6 +219,14 @@ server = AgentWebSocketServer(
 - `close_websocket_safely(websocket)` - 安全关闭连接
 - `get_websocket_info(websocket)` - 获取连接调试信息
 
+### 出站发送与流控（概念）
+- 每个连接使用“单写者出站通道”串行发送，避免并发 `send()` 冲突，并提供有界队列背压
+- 高频事件（如 `agent.partial_answer`、`agent.llm_message`）采用短窗口合并（默认 75ms）以降低抖动
+
+### 可靠性与断线回放（概念）
+- 客户端按需发送 `user.ack`，携带最近收到的 `last_event_id`（推荐）或 `last_seq`，服务端据此裁剪内存缓冲
+- 断线后使用 `user.reconnect_with_state`（携带已签名状态）并可提供 `last_event_id/last_seq`，服务端将按会话历史缓冲做差量回放（单次回放最多 200 条）
+
 ## 环境变量配置
 
 | 变量 | 作用 | 默认值 | 有效值 |
@@ -241,3 +267,5 @@ server = AgentWebSocketServer(
 - [React集成指南](./react-integration.md) - React框架集成示例
 - [数据可视化集成](./visualization-integration.md) - 图表展示功能
 - [客户端状态管理](./client-state-management.md) - 状态保存和恢复
+- [Plan & Solve 消息指南](./plan_solver_messages.md) - 规划/求解流水线与细粒度控制
+- [WebSocket 通信方案现状问题记录](../websocket-known-issues.md) - 可靠性与改进方向

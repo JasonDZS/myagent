@@ -17,7 +17,8 @@
 7) 统计信息（规划/求解/全流程）
 8) 错误与取消
 9) 示例时序
-10) 辅助脚本
+10) 可靠性与回放（ACK/seq/event_id）
+11) 辅助脚本
 
 ---
 
@@ -82,26 +83,27 @@
 
 - 规划阶段：
   - `plan.start` → `{ "question": "..." }`
-  - `plan.completed` → `{ "tasks": [...], "plan_summary": "...", "statistics": { ... } }`
+  - `plan.completed` → `{ "tasks": [...], "plan_summary": "...", "statistics": [ { ... }, { ... } ] }`
   - `agent.user_confirm`（scope=plan，附带 tasks）
   - 客户端使用 `user.response` 回复确认
 
 - 求解阶段（并行，按任务独立推进）：
   - `solver.start` → `{ "task": { ... } }`
-  - `solver.completed` → `{ "task": { ... }, "result": { "output": {...}, "summary": "...", "agent_name": "...", "statistics": { ... } } }`
+  - `solver.completed` → `{ "task": { ... }, "result": { "output": {...}, "summary": "...", "agent_name": "...", "statistics": [ { ... }, { ... } ] } }`
   - `solver.cancelled`（单页取消）
   - `solver.restarted`（单页重启）
 
 - 聚合阶段：
   - `aggregate.start` → `{ "context": { ... }, "solver_results": [...] }`
   - `aggregate.completed` → `{ "context": { ... }, "solver_results": [...], "output": ... }`
-  - `pipeline.completed`（附全流程统计）
+  - `pipeline.completed`（附全流程统计，statistics 为所有调用的列表）
   - `agent.final_answer`
 
 - 通用：
   - `agent.tool_call` / `agent.tool_result`：工具调用过程
+  - `agent.llm_message`：可选，发送 LLM 对话记录（需开启环境变量，见其他文档）
   - `agent.error` / `system.error` / `agent.timeout` / `agent.interrupted`
-  - `system.heartbeat`
+  - `system.notice` / `system.heartbeat`
 
 ---
 
@@ -140,19 +142,19 @@
   ```json
   { "event": "user.cancel_task", "session_id": "<sid>", "content": { "task_id": 2 } }
   ```
-  推送 `system.notice` 确认，随后该页 `solver.cancelled`。
+  推送 `system.notice` 确认（`metadata`: `{ "task_id": 2, "action": "cancel_task", "ok": true }`），随后该页 `solver.cancelled`。
 
 - 重新生成单页：
   ```json
   { "event": "user.restart_task", "session_id": "<sid>", "content": { "task_id": 2 } }
   ```
-  推送 `system.notice`，稍后看到该页新的 `solver.start` 与 `solver.completed`。
+  推送 `system.notice`（`metadata`: `{ "task_id": 2, "action": "restart_task", "ok": true }`），稍后看到该页新的 `solver.start` 与 `solver.completed`。
 
 - 取消规划（规划/确认阶段）：
   ```json
   { "event": "user.cancel_plan", "session_id": "<sid>" }
   ```
-  推送 `plan.cancelled`。
+  推送 `system.notice`（`metadata`: `{ "action": "cancel_plan", "ok": true }`），以及（由流水线）`plan.cancelled`。
 
 - 重新规划（仅限未开始求解前）：
   ```json
@@ -183,7 +185,10 @@
     "output": { "id": 1, "title": "销售概览", "text": "...", "charts": [ ... ] },
     "summary": "Slide 1: 销售概览 draft ready.",
     "agent_name": "ppt_slide_solver_1",
-    "statistics": { "total_calls": 2, "total_input_tokens": 684, "total_output_tokens": 412, "total_tokens": 1096 }
+    "statistics": [
+      { "id": 1, "call_type": "ask", "timestamp": "...", "input_tokens": 320, "output_tokens": 180, "total_tokens": 500, "origin": "solver", "agent": "ppt_slide_solver_1", "metadata": { ... } },
+      { "id": 2, "call_type": "ask", "timestamp": "...", "input_tokens": 364, "output_tokens": 232, "total_tokens": 596, "origin": "solver", "agent": "ppt_slide_solver_1", "metadata": { ... } }
+    ]
   }
   ```
 
@@ -191,17 +196,22 @@
 
 ## 7. 统计信息
 
-- 规划统计（`plan.completed.statistics`）：记录模型、请求次数与累计 token；当 `broadcast_tasks=false` 时仍会包含统计与 `plan_summary`。
+- 结构变更：`statistics` 统一为 `List<Dict>`，每个元素代表一次具体的 LLM 调用（含 `input_tokens`、`output_tokens`、`total_tokens` 等字段）。
+  - `plan.completed.statistics`: 该阶段内的所有调用列表，元素带 `origin: "plan"`、`agent: <planner_name>`。
+  - `solver.completed.result.statistics`: 当前任务求解阶段的所有调用列表，元素带 `origin: "solver"`、`agent: <solver_name>`。
+  - `pipeline.completed.statistics`: 整个流水线（规划 + 各任务求解）的所有调用列表，按时间顺序汇总。
 
-- 全流程统计（`pipeline.completed.statistics`）：
+- 示例（`pipeline.completed.statistics`）：
   ```json
-  {
-    "plan": { ... },
-    "solvers": [ { "task": { ... }, "agent_name": "...", "statistics": { ... } } ],
-    "totals": { "total_calls": 5, "total_input_tokens": 1580, "total_output_tokens": 920, "total_tokens": 2500 },
-    "calls": [ { "origin": "plan" | "solver", "agent": "...", ... } ]
-  }
+  [
+    { "id": 1, "call_type": "ask", "timestamp": "...", "input_tokens": 220, "output_tokens": 120, "total_tokens": 340, "origin": "plan", "agent": "planner_x", "metadata": { ... } },
+    { "id": 1, "call_type": "ask", "timestamp": "...", "input_tokens": 320, "output_tokens": 180, "total_tokens": 500, "origin": "solver", "agent": "solver_a", "metadata": { ... } }
+  ]
   ```
+
+- 说明：
+  - 若某阶段没有调用则可省略 `statistics` 字段。
+  - 当 `broadcast_tasks=false` 时，`plan.completed` 仍包含 `plan_summary` 与 `statistics`（若有）。
 
 ---
 
@@ -253,3 +263,39 @@ user.solve_tasks (含 tasks)
 ```
 
 ---
+
+## 10. 可靠性与回放（ACK/seq/event_id）
+
+- 服务器为每条下行事件注入：
+  - `seq`：连接内单调递增序号
+  - `event_id`：`<connectionId>-<seq>` 唯一标识
+- 客户端建议：
+  - 按节流策略发送 ACK：`{ "event": "user.ack", "content": { "last_event_id": "<cid>-<seq>" } }`
+    - 若无法持有 `last_event_id`，可用 `{ "last_seq": <number> }`
+  - 断线重连使用 `user.reconnect_with_state`，并在 `content` 中携带 `last_event_id`（推荐）或 `last_seq`；服务端将基于会话级缓冲进行“差量回放”（单次最多 200 条）
+- 简要示例（浏览器）：
+```javascript
+let lastEventId = null, lastSeq = 0;
+ws.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (typeof m.event_id === 'string') lastEventId = m.event_id;
+  if (typeof m.seq === 'number') lastSeq = m.seq;
+  // ...
+};
+setInterval(() => {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const content = lastEventId ? { last_event_id: lastEventId } : { last_seq: lastSeq };
+  ws.send(JSON.stringify({ event: 'user.ack', content }));
+}, 200);
+```
+
+---
+
+## 11. 辅助脚本
+
+- 终端打印与交互脚本：`scripts/ws_print_messages.py`
+  - 支持：
+    - `--cancel-after <sec>`：在会话建立/提问后 N 秒自动发送 `user.cancel`
+    - 计划确认自动回复/交互确认（可附带覆盖 tasks）
+    - 直接任务模式：`user.solve_tasks`（从文件或命令行提供 tasks）
+  - 适合快速验证事件流与交互逻辑

@@ -13,6 +13,7 @@ from urllib.request import urlopen
 from myagent import create_react_agent
 from myagent.tool.base_tool import BaseTool
 from myagent.tool.base_tool import ToolResult
+from myagent.stats import get_stats_manager
 
 class SerperSearchTool(BaseTool):
     name: str = "web_search"
@@ -143,9 +144,72 @@ async def main() -> None:
         tools=[SerperSearchTool()],
         system_prompt="You research user questions and call web_search for up-to-date context.",
         next_step_prompt="Use web_search when you need fresh information before answering.",
-    )    summary = await agent.run("查找 OpenAI 最新的产品发布,并给出链接。")
+    )    
+    summary = await agent.run("查找 OpenAI 最新的产品发布,并给出链接。")
     print("\n✅ Agent execution completed:")
     print(summary)
+
+    # Print per-agent LLM call statistics
+    try:
+        agent_stats = agent.get_statistics()
+        print("\n--- Agent LLM Statistics (web-searcher) ---")
+        print(
+            f"Model: {agent_stats.get('model')} | Total Calls: {agent_stats.get('total_calls')} | "
+            f"Input Tokens: {agent_stats.get('total_input_tokens')} | Output Tokens: {agent_stats.get('total_output_tokens')} | "
+            f"Total Tokens: {agent_stats.get('total_tokens')}"
+        )
+        calls = agent_stats.get("calls") or []
+        if calls:
+            print("Recent Calls:")
+            for c in calls[-5:]:  # show last 5
+                print(
+                    f"  - #{c.get('id')} {c.get('timestamp')} type={c.get('call_type')} "
+                    f"in={c.get('input_tokens', 0)} out={c.get('output_tokens', 0)} total={c.get('total_tokens', 0)}"
+                )
+    except Exception as e:
+        print(f"[stats] Failed to get agent statistics: {e}")
+
+    # Print global aggregated statistics (agents/tools/models)
+    try:
+        snapshot = get_stats_manager().snapshot()
+        print("\n--- Global Statistics Snapshot ---")
+        # Agents
+        created = snapshot.get("agents", {}).get("created", {})
+        by_agent = snapshot.get("agents", {}).get("by_agent", {})
+        print(f"Agents Created: {created}")
+        for name, a in by_agent.items():
+            print(
+                f"Agent '{name}': runs={a.get('runs')} success={a.get('success')} error={a.get('error')} "
+                f"cancelled={a.get('cancelled')} terminated={a.get('terminated')} avg_ms={a.get('avg_duration_ms')} steps={a.get('total_steps')}"
+            )
+
+        # Tools
+        by_tool = snapshot.get("tools", {}).get("by_tool", {})
+        if by_tool:
+            print("Tools:")
+            for tool, t in by_tool.items():
+                print(
+                    f"  {tool}: exec={t.get('executions')} ok={t.get('success')} fail={t.get('failure')} avg_ms={t.get('avg_duration_ms')}"
+                )
+
+        # Models
+        models = snapshot.get("models", {})
+        if models:
+            print("Models (by model):")
+            for model, m in models.get("by_model", {}).items():
+                print(
+                    f"  {model}: calls={m.get('calls')} in={m.get('input_tokens')} out={m.get('output_tokens')}"
+                )
+            by_agent_model = models.get("by_agent", {})
+            if by_agent_model:
+                print("Models (by agent):")
+                for aname, models_map in by_agent_model.items():
+                    for model, m in models_map.items():
+                        print(
+                            f"  {aname}@{model}: calls={m.get('calls')} in={m.get('input_tokens')} out={m.get('output_tokens')}"
+                        )
+    except Exception as e:
+        print(f"[stats] Failed to get global statistics: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())

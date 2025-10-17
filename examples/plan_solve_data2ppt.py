@@ -597,7 +597,7 @@ async def main() -> None:
     parser.add_argument(
         "question",
         nargs="?",
-        default="请分析销售数据库并生成一份包含关键指标和趋势的多页PPT报告",
+        default="请分析销售数据库并生成一份包含关键指标和趋势的3页PPT报告",
         help="High-level analysis request that the plan agent will decompose.",
     )
     args = parser.parse_args()

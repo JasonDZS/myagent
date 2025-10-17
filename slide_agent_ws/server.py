@@ -23,14 +23,14 @@ if load_dotenv:
 
 # Ensure parent directory is importable when run as a script
 try:
-    from myagent.agent.plan_solver import create_plan_solver_session_agent
+    from myagent.ws.plan_solver import create_plan_solver_session_agent
     from myagent.ws import AgentWebSocketServer
 except Exception:  # pragma: no cover - fallback when executed as a script
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from myagent.agent.plan_solver import create_plan_solver_session_agent
+    from myagent.ws.plan_solver import create_plan_solver_session_agent
     from myagent.ws import AgentWebSocketServer
 
 # Support running both as a module and as a script.

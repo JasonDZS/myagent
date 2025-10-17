@@ -16,11 +16,12 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from pydantic import Field
 
-from ..logger import logger
-from ..schema import AgentState
-from ..ws import get_ws_session_context, send_websocket_message
-from ..ws.events import create_event, AgentEvents
-from .base import BaseAgent
+from myagent.logger import logger
+from myagent.schema import AgentState
+from myagent.ws import get_ws_session_context, send_websocket_message
+from myagent.ws.events import create_event, AgentEvents
+from myagent.agent.base import BaseAgent
+from myagent.stats import get_stats_manager
 
 AggregateFn = Callable[["PlanContext", Sequence["SolverRunResult"]], Any]
 AsyncAggregateFn = Callable[["PlanContext", Sequence["SolverRunResult"]], Awaitable[Any]]
@@ -36,7 +37,8 @@ class PlanContext:
     tasks: Sequence[Any]
     plan_summary: str | None
     raw_plan_output: str | None
-    plan_statistics: dict[str, Any] | None = None
+    # List of per-call statistics (each item is one LLM call record)
+    plan_statistics: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,8 @@ class SolverRunResult:
     summary: str | None
     raw_output: str | None
     agent_name: str
-    statistics: dict[str, Any] | None = None
+    # List of per-call statistics for this solver run
+    statistics: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -58,7 +61,10 @@ class PlanSolveResult:
     context: PlanContext
     solver_results: Sequence[SolverRunResult]
     aggregate_output: Any = None
-    statistics: dict[str, Any] | None = None
+    # Unified list of per-call statistics across the pipeline
+    statistics: list[dict[str, Any]] | None = None
+    # Aggregated runtime metrics snapshot (agents/tools/models)
+    metrics: dict[str, Any] | None = None
 
     @property
     def tasks(self) -> Sequence[Any]:
@@ -69,7 +75,7 @@ class PlanSolveResult:
         return self.context.plan_summary
 
     @property
-    def plan_statistics(self) -> dict[str, Any] | None:
+    def plan_statistics(self) -> list[dict[str, Any]] | None:
         return self.context.plan_statistics
 
     @property
@@ -77,7 +83,7 @@ class PlanSolveResult:
         return self.context.question
 
     @property
-    def pipeline_statistics(self) -> dict[str, Any] | None:
+    def pipeline_statistics(self) -> list[dict[str, Any]] | None:
         return self.statistics
 
 
@@ -205,10 +211,25 @@ class PlanSolverPipeline:
             )
 
         plan_summary = self.planner.extract_summary(plan_agent, plan_output)
-        plan_statistics = None
+        plan_statistics: list[dict[str, Any]] | None = None
         if hasattr(plan_agent, "get_statistics"):
             try:
-                plan_statistics = plan_agent.get_statistics()
+                stats_obj = plan_agent.get_statistics()
+                # Prefer per-call records; fall back to wrapping the object
+                calls = []
+                if isinstance(stats_obj, dict):
+                    maybe_calls = stats_obj.get("calls")
+                    if isinstance(maybe_calls, list):
+                        calls = [c.copy() for c in maybe_calls if isinstance(c, dict)]
+                if not calls and isinstance(stats_obj, dict):
+                    calls = [stats_obj]
+
+                # Annotate origin/agent for easier downstream attribution
+                agent_name = getattr(plan_agent, "name", self.planner.name)
+                for c in calls:
+                    c.setdefault("origin", "plan")
+                    c.setdefault("agent", agent_name)
+                plan_statistics = calls or None
             except Exception as exc:  # pragma: no cover - safeguard
                 logger.debug(
                     "Failed to collect planner statistics (%s): %s",
@@ -224,12 +245,21 @@ class PlanSolverPipeline:
             plan_statistics=plan_statistics,
         )
 
+        # Best-effort global metrics snapshot after planning phase
+        metrics_snapshot = None
+        try:
+            metrics_snapshot = get_stats_manager().snapshot()
+        except Exception:
+            metrics_snapshot = None
+
         await self._notify(
             "plan.completed",
             {
                 "tasks": tasks,
                 "plan_summary": plan_summary,
-                "statistics": plan_statistics,
+                # statistics is a List[Dict] (per-call records); may be omitted if None
+                **({"statistics": plan_statistics} if plan_statistics is not None else {}),
+                **({"metrics": metrics_snapshot} if metrics_snapshot is not None else {}),
             },
         )
 
@@ -243,6 +273,12 @@ class PlanSolverPipeline:
         pipeline_statistics = self._build_pipeline_statistics(
             context.plan_statistics, solver_results
         )
+        # Best-effort global metrics snapshot for the entire pipeline
+        metrics_snapshot = None
+        try:
+            metrics_snapshot = get_stats_manager().snapshot()
+        except Exception:
+            metrics_snapshot = None
 
         await self._notify(
             "pipeline.completed",
@@ -250,7 +286,8 @@ class PlanSolverPipeline:
                 "context": context,
                 "solver_results": solver_results,
                 "aggregate_output": aggregate_output,
-                "statistics": pipeline_statistics,
+                **({"statistics": pipeline_statistics} if pipeline_statistics is not None else {}),
+                **({"metrics": metrics_snapshot} if metrics_snapshot is not None else {}),
             },
         )
 
@@ -259,6 +296,7 @@ class PlanSolverPipeline:
             solver_results=solver_results,
             aggregate_output=aggregate_output,
             statistics=pipeline_statistics,
+            metrics=metrics_snapshot,
         )
 
     async def _run_solvers(
@@ -287,10 +325,22 @@ class PlanSolverPipeline:
                 summary = self.solver.extract_summary(
                     agent, solver_output, task, context=context
                 )
-                statistics = None
+                statistics: list[dict[str, Any]] | None = None
                 if hasattr(agent, "get_statistics"):
                     try:
-                        statistics = agent.get_statistics()
+                        stats_obj = agent.get_statistics()
+                        calls = []
+                        if isinstance(stats_obj, dict):
+                            maybe_calls = stats_obj.get("calls")
+                            if isinstance(maybe_calls, list):
+                                calls = [c.copy() for c in maybe_calls if isinstance(c, dict)]
+                        if not calls and isinstance(stats_obj, dict):
+                            calls = [stats_obj]
+                        # Annotate origin/agent for downstream attribution
+                        for c in calls:
+                            c.setdefault("origin", "solver")
+                            c.setdefault("agent", getattr(agent, "name", self.solver.name))
+                        statistics = calls or None
                     except Exception as exc:  # pragma: no cover - safeguard
                         logger.debug(
                             "Failed to collect solver statistics (%s): %s",
@@ -311,6 +361,7 @@ class PlanSolverPipeline:
                     "agent_name": result.agent_name,
                 }
                 if statistics is not None:
+                    # statistics is a List[Dict] (per-call records)
                     sanitized_result["statistics"] = statistics
                 await self._notify(
                     "solver.completed",
@@ -486,78 +537,41 @@ class PlanSolverPipeline:
 
     def _build_pipeline_statistics(
         self,
-        plan_statistics: dict[str, Any] | None,
+        plan_statistics: list[dict[str, Any]] | None,
         solver_results: Sequence[SolverRunResult],
-    ) -> dict[str, Any] | None:
-        has_plan = bool(plan_statistics)
-        solver_stats = [res for res in solver_results if res.statistics]
-        if not has_plan and not solver_stats:
-            return None
+    ) -> list[dict[str, Any]] | None:
+        """Build unified per-call statistics list for the entire pipeline.
 
+        Returns a List[Dict], where each dict represents a single LLM call.
+        """
         combined_calls: list[dict[str, Any]] = []
 
-        def _accumulate(stat: dict[str, Any] | None, origin: str, agent_name: str) -> None:
-            nonlocal combined_calls
-            if not stat:
+        # Helper to append calls while ensuring origin/agent annotations
+        def _append_calls(calls: list[dict[str, Any]] | None, origin: str, agent_name: str) -> None:
+            if not calls:
                 return
-
-            calls = stat.get("calls")
-            if isinstance(calls, list):
-                for call in calls:
-                    if isinstance(call, dict):
-                        call_entry = call.copy()
-                        call_entry.setdefault("origin", origin)
-                        call_entry.setdefault("agent", agent_name)
-                        combined_calls.append(call_entry)
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                entry = call.copy()
+                entry.setdefault("origin", origin)
+                entry.setdefault("agent", agent_name)
+                combined_calls.append(entry)
 
         if plan_statistics:
-            _accumulate(plan_statistics, "plan", plan_statistics.get("agent", self.planner.name))
+            # Try to infer agent name from any call entry; fallback to planner name
+            agent_name = self.planner.name
+            if isinstance(plan_statistics, list) and plan_statistics:
+                a = plan_statistics[0]
+                if isinstance(a, dict) and isinstance(a.get("agent"), str):
+                    agent_name = a.get("agent") or agent_name
+            _append_calls(plan_statistics, "plan", agent_name)
 
-        solver_statistics_entries: list[dict[str, Any]] = []
-        for result in solver_stats:
-            stats = result.statistics
-            agent_name = result.agent_name
-            _accumulate(stats, "solver", agent_name)
-            solver_statistics_entries.append(
-                {
-                    "task": result.task,
-                    "agent_name": agent_name,
-                    "statistics": stats,
-                }
-            )
+        for result in solver_results:
+            if result.statistics:
+                _append_calls(result.statistics, "solver", result.agent_name)
 
-        # Derive totals directly from the unified call list to ensure consistency
-        def _get_token(call: dict[str, Any], key: str) -> int:
-            # Prefer top-level token fields; fall back to metadata if present
-            val = call.get(key)
-            if isinstance(val, (int, float)):
-                return int(val)
-            meta = call.get("metadata")
-            if isinstance(meta, dict):
-                mval = meta.get("input_tokens" if key == "input_tokens" else "output_tokens")
-                if isinstance(mval, (int, float)):
-                    return int(mval)
-            return 0
-
-        total_calls = len(combined_calls)
-        total_input_tokens = sum(_get_token(c, "input_tokens") for c in combined_calls)
-        total_output_tokens = sum(_get_token(c, "output_tokens") for c in combined_calls)
-
-        totals = {
-            "total_calls": total_calls,
-            "total_input_tokens": total_input_tokens,
-            "total_output_tokens": total_output_tokens,
-            "total_tokens": total_input_tokens + total_output_tokens,
-        }
-        payload = {
-            "plan": plan_statistics,
-            "solvers": solver_statistics_entries,
-            "totals": totals,
-        }
-        if combined_calls:
-            payload["calls"] = combined_calls
-
-        return payload
+        return combined_calls or None
 
     def set_progress_callback(self, callback: ProgressCallback | None) -> None:
         """Register a callback for pipeline progress events."""

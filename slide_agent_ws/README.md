@@ -123,7 +123,7 @@
 
 - 规划与求解职责分离：规划仅产出结构化任务（`SlideTask`），求解才做数据查询与内容生成。
 - 工具输入输出严格校验，错误信息明确；`_normalize_slide_payload` 统一字段与默认值。
-- 并发控制与细粒度中断/重启由 `PlanSolverPipeline` 与 `PlanSolverSessionAgent` 提供（位于 `myagent/agent/plan_solver.py`）。
+- 并发控制与细粒度中断/重启由 `PlanSolverPipeline` 与 `PlanSolverSessionAgent` 提供（位于 `myagent/ws/plan_solver.py`）。
 - 复用 `examples/data2ppt.py` 中的数据库与 PPT 工具，避免重复实现。
 
 ---
@@ -132,7 +132,7 @@
 
 ```python
 from slide_agent_ws.pipeline import build_pipeline
-from myagent.agent.plan_solver import create_plan_solver_session_agent
+from myagent.ws.plan_solver import create_plan_solver_session_agent
 
 pipeline = build_pipeline()
 session_agent = create_plan_solver_session_agent(

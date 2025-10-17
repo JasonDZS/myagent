@@ -2,8 +2,9 @@
 
 from typing import Any
 
-from myagent.exceptions import ToolError
-from myagent.logger import logger
+from ..exceptions import ToolError
+from ..logger import logger
+from ..stats import get_stats_manager
 from .base_tool import BaseTool
 from .base_tool import ToolFailure
 from .base_tool import ToolResult
@@ -31,11 +32,60 @@ class ToolCollection:
         tool = self.tool_map.get(name)
         if not tool:
             return ToolFailure(error=f"Tool {name} is invalid")
+        stats = get_stats_manager()
+        run_id = None
         try:
-            result = await tool(**tool_input)
+            # Record tool call start
+            run_id = stats.start_tool_run(name, args=tool_input or {})
+        except Exception:
+            run_id = None
+
+        try:
+            result = await tool(**(tool_input or {}))
+
+            # Determine success based on ToolResult
+            is_success = not (
+                hasattr(result, "error") and getattr(result, "error") is not None
+            ) and result.__class__.__name__ != "ToolFailure"
+
+            # Record tool call end
+            try:
+                if run_id:
+                    output_size = None
+                    try:
+                        output = getattr(result, "output", None)
+                        output_size = len(str(output)) if output is not None else None
+                    except Exception:
+                        output_size = None
+                    stats.finish_tool_run(
+                        run_id=run_id,
+                        success=bool(is_success),
+                        output_size=output_size,
+                        error=(getattr(result, "error", None) if not is_success else None),
+                    )
+            except Exception:
+                pass
+
             return result
         except ToolError as e:
+            # Record tool failure
+            try:
+                if run_id:
+                    stats.finish_tool_run(
+                        run_id=run_id, success=False, output_size=None, error=e.message
+                    )
+            except Exception:
+                pass
             return ToolFailure(error=e.message)
+        except Exception as e:  # unexpected error path
+            try:
+                if run_id:
+                    stats.finish_tool_run(
+                        run_id=run_id, success=False, output_size=None, error=str(e)
+                    )
+            except Exception:
+                pass
+            raise
 
     async def execute_all(self) -> list[ToolResult]:
         """Execute all tools in the collection sequentially."""

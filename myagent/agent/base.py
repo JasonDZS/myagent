@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 from ..llm import LLM
 from ..logger import logger
 from ..schema import ROLE_TYPE, AgentState, Memory, Message, Role
+from ..stats import get_stats_manager
 
 
 class BaseAgent(BaseModel, ABC):
@@ -70,6 +71,11 @@ class BaseAgent(BaseModel, ABC):
             self.llm = LLM(config_name=self.name.lower())
         if not isinstance(self.memory, Memory):
             self.memory = Memory()
+        # Record agent creation for statistics
+        try:
+            get_stats_manager().agent_created(self.name)
+        except Exception:
+            pass
         return self
 
     @asynccontextmanager
@@ -159,40 +165,88 @@ class BaseAgent(BaseModel, ABC):
 
         results: list[str] = []
         final_state = None
+        stats_run_id: str | None = None
+        stats = get_stats_manager()
+        # Start agent run stats and set context for downstream tool/LLM attribution
+        try:
+            stats_run_id = stats.start_agent_run(self.name, getattr(self.llm, "model", None))
+            # Provide agent name to LLM for per-call attribution
+            setattr(self.llm, "_active_agent_name", self.name)
+        except Exception:
+            stats_run_id = None
 
-        async with self.state_context(AgentState.RUNNING):
-            while (
-                self.current_step < self.max_steps and self.state != AgentState.FINISHED
-            ):
-                self.current_step += 1
-                logger.info(f"Executing step {self.current_step}/{self.max_steps}")
-                step_result = await self.step()
+        try:
+            async with self.state_context(AgentState.RUNNING):
+                while (
+                    self.current_step < self.max_steps and self.state != AgentState.FINISHED
+                ):
+                    self.current_step += 1
+                    logger.info(f"Executing step {self.current_step}/{self.max_steps}")
+                    step_result = await self.step()
 
-                # Check for stuck state
-                if self.is_stuck():
-                    self.handle_stuck_state()
+                    # Check for stuck state
+                    if self.is_stuck():
+                        self.handle_stuck_state()
 
-                results.append(f"Step {self.current_step}: {step_result}")
+                    results.append(f"Step {self.current_step}: {step_result}")
 
-            # Capture the final state before state_context reverts it
-            final_state = self.state
+                # Capture the final state before state_context reverts it
+                final_state = self.state
 
-            if self.current_step >= self.max_steps:
-                self.current_step = 0
-                final_state = AgentState.IDLE
-                results.append(f"Terminated: Reached max steps ({self.max_steps})")
+                if self.current_step >= self.max_steps:
+                    self.current_step = 0
+                    final_state = AgentState.IDLE
+                    results.append(f"Terminated: Reached max steps ({self.max_steps})")
 
-        # Set the final state after exiting state_context
-        if final_state:
-            self.state = final_state
+            # Set the final state after exiting state_context
+            if final_state:
+                self.state = final_state
 
-        last_llm_response = self._get_last_llm_response()
-        if last_llm_response is not None:
-            self.final_response = last_llm_response
-        else:
-            self.final_response = results[-1] if results else None
+            last_llm_response = self._get_last_llm_response()
+            if last_llm_response is not None:
+                self.final_response = last_llm_response
+            else:
+                self.final_response = results[-1] if results else None
 
-        return "\n".join(results) if results else "No steps executed"
+            # Finish stats recording before returning (success/terminated)
+            try:
+                if stats_run_id:
+                    status = (
+                        "finished"
+                        if self.state == AgentState.FINISHED
+                        else "terminated" if self.current_step >= self.max_steps else self.state.value
+                    )
+                    stats.finish_agent_run(
+                        run_id=stats_run_id,
+                        status=status,
+                        steps=self.current_step,
+                        final_state=self.state.value,
+                    )
+            except Exception:
+                pass
+
+            return "\n".join(results) if results else "No steps executed"
+
+        except Exception:
+            # Record failure in stats then re-raise
+            try:
+                if stats_run_id:
+                    stats.finish_agent_run(
+                        run_id=stats_run_id,
+                        status="error",
+                        steps=self.current_step,
+                        final_state="error",
+                    )
+            except Exception:
+                pass
+            raise
+        finally:
+            # Clear active agent attribution on the LLM
+            try:
+                if getattr(self.llm, "_active_agent_name", None) == self.name:
+                    setattr(self.llm, "_active_agent_name", None)
+            except Exception:
+                pass
 
     @abstractmethod
     async def step(self) -> str:

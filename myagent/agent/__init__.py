@@ -2,7 +2,7 @@ from .base import BaseAgent
 from .factory import create_react_agent
 from .factory import create_toolcall_agent
 from .factory import create_deep_agent
-from .plan_solver import (
+from myagent.ws.plan_solver import (
     PlanAgent,
     PlanContext,
     PlanSolveResult,

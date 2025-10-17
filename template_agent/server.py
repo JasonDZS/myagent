@@ -20,7 +20,7 @@ if load_dotenv:
         pass
 
 try:
-    from myagent.agent.plan_solver import create_plan_solver_session_agent
+    from myagent.ws.plan_solver import create_plan_solver_session_agent
     from myagent.ws import AgentWebSocketServer
     from myagent.ws.events import AgentEvents, create_event
     from myagent.logger import logger
@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from myagent.agent.plan_solver import create_plan_solver_session_agent
+    from myagent.ws.plan_solver import create_plan_solver_session_agent
     from myagent.ws import AgentWebSocketServer
 
 try:

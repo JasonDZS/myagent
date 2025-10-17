@@ -288,6 +288,22 @@ class LLM:
         record["metadata"] = metadata
         self.call_history.append(record)
 
+        # Also update global stats manager aggregates
+        try:
+            from .stats import get_stats_manager
+
+            agent_name = getattr(self, "_active_agent_name", None)
+            get_stats_manager().record_llm_call(
+                model=getattr(self, "model", None),
+                call_type=call_type,
+                input_tokens=metadata.get("input_tokens", 0),
+                output_tokens=metadata.get("output_tokens", 0),
+                agent_name=agent_name,
+            )
+        except Exception:
+            # Stats are best-effort; ignore failures
+            pass
+
     def _log_call(
         self,
         call_type: str,
