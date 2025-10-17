@@ -67,6 +67,12 @@ export interface AgentConsoleState {
   connection: 'connected' | 'connecting' | 'disconnected' | 'error';
   messages: WebSocketMessage[];
   currentSessionId?: string;
+  viewSessionId?: string;
+  availableSessions: Array<{
+    sessionId: string;
+    updatedAt?: string;
+    messageCount: number;
+  }>;
   pendingConfirm?: ConfirmMessage | null;
   lastEventId?: string | null;
   lastSeq?: number;

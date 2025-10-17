@@ -7,6 +7,8 @@ Features
 - Session lifecycle helpers (create, request_state, reconnect_with_state)
 - React provider + hook to drive UI
 - Drop-in `<MyAgentConsole />` for quick integration
+- Built-in dark/light themes configurable via prop
+- Local session cache via Zustand with per-session history switching
 
 Installation
 ```
@@ -39,6 +41,16 @@ export default function App() {
 }
 ```
 
+Appearance
+- `MyAgentConsole` accepts a `theme` prop (`'dark' | 'light'`, defaults to `'dark'`).
+- CSS variables (`--ma-*`) drive the styling, so you can override colors or define additional themes by wrapping the root element with custom classes.
+- Example: `<MyAgentConsole theme="light" />` renders the bundled light palette without any additional CSS.
+
+Sessions & history
+- Incoming messages (and local user messages) are cached per session in a persisted Zustand store.
+- The header shows a session selector once more than one session exists; choosing an older session switches the message list to that history and temporarily disables the composer.
+- `useMyAgent()` exposes `state.availableSessions`, `state.viewSessionId`, and a `selectSession(sessionId)` helper so you can build custom session pickers.
+
 Local example (split view)
 - A resizable test page is included: `web/ws-console/example`
 - Run it pointing to your WS server (default ws://localhost:8080)
@@ -55,7 +67,23 @@ Hook API
 import { MyAgentProvider, useMyAgent } from '@myagent/ws-console';
 
 function CustomUI() {
-  const { state, sendUserMessage, cancel, solveTasks, cancelTask, restartTask, replan, requestState, reconnectWithState } = useMyAgent();
+  const { state, selectSession, sendUserMessage, cancel, solveTasks, cancelTask, restartTask, replan, requestState, reconnectWithState } = useMyAgent();
+
+  return (
+    <aside>
+      <p>当前连接：{state.connection}</p>
+      <p>当前会话：{state.currentSessionId ?? '无'}</p>
+      <ul>
+        {state.availableSessions.map((session) => (
+          <li key={session.sessionId}>
+            <button onClick={() => selectSession(session.sessionId)}>
+              查看 {session.sessionId}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  );
   // ...
 }
 ```

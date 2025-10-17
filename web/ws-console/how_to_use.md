@@ -13,13 +13,13 @@ npm install @myagent/ws-console lucide-react
 
 ## 2. 引入样式文件
 
-组件默认提供深色主题样式。将打包出来的 `styles.css` 引入到应用入口（如 `App.tsx` 或 `index.tsx`）：
+组件内置深色（`dark`）和浅色（`light`）主题，通过同一份 `styles.css` 提供。将打包出来的样式文件引入到应用入口（如 `App.tsx` 或 `index.tsx`）：
 
 ```tsx
 import '@myagent/ws-console/styles.css';
 ```
 
-如需覆盖样式，可在自定义样式中覆写 `.ma-*` 相关的 CSS 变量或类名。
+引入后，可在渲染组件时通过 `theme` 属性切换主题，默认值为 `dark`。如果需要进一步定制，可在自定义样式中覆写 `.ma-*` 相关的 CSS 变量或类名。
 
 ## 3. 包裹 `MyAgentProvider`
 
@@ -56,6 +56,9 @@ function Providers({ children }: { children: React.ReactNode }) {
 - **新建会话**：手动触发新的会话生命周期。
 - **导出状态**：请求服务端发送签名状态，并写入 `localStorage`。
 - **恢复状态**：从 `localStorage` 读取最近一次导出的状态并重连。
+- **会话切换**：头部下拉框列出本地缓存的所有会话，选择后可浏览历史消息（此时输入框会临时禁用，避免向旧会话发送消息）。
+
+所有消息会基于 Zustand 存入浏览器 `localStorage`，即使刷新页面也能保留历史记录并继续查看。
 
 示例：
 
@@ -65,13 +68,13 @@ import { MyAgentConsole } from '@myagent/ws-console';
 export default function AgentPage() {
   return (
     <div style={{ height: 640 }}>
-      <MyAgentConsole className="custom-console" />
+      <MyAgentConsole className="custom-console" theme="light" />
     </div>
   );
 }
 ```
 
-`className` 参数可用于挂载额外的样式类名。
+`className` 参数可用于挂载额外的样式类名，`theme` 可在 `dark`/`light` 之间切换。
 
 ## 5. 扩展自定义行为
 
@@ -81,11 +84,19 @@ export default function AgentPage() {
 import { useMyAgent } from '@myagent/ws-console';
 
 function CustomFooter() {
-  const { state, sendUserMessage, cancel, solveTasks } = useMyAgent();
+  const { state, selectSession, sendUserMessage, cancel, solveTasks } = useMyAgent();
 
   return (
     <footer>
       当前连接：{state.connection}
+      <div>
+        历史会话数量：{state.availableSessions.length}
+        {state.availableSessions.map((session) => (
+          <button key={session.sessionId} onClick={() => selectSession(session.sessionId)}>
+            查看 {session.sessionId}
+          </button>
+        ))}
+      </div>
       <button onClick={() => sendUserMessage({ text: 'ping' })}>发送消息</button>
       <button onClick={() => cancel()}>停止当前流程</button>
       <button onClick={() => solveTasks([{ task_id: 'custom', description: 'Run job' }])}>
@@ -100,8 +111,11 @@ function CustomFooter() {
 
 - `state.messages`：服务端事件数组，`MyAgentConsole` 会自动渲染。
 - `state.generating`：计划、聚合、工具调用或「思考中」状态的组合标记。
+- `state.availableSessions`：本地缓存的会话列表（按照最近更新时间排序）。
+- `state.viewSessionId`：当前查看的会话 ID（可能与 `state.currentSessionId` 不同）。
 - `sendUserMessage(content)`：向当前会话推送用户消息。
 - `sendResponse(stepId, content)`：对确认步骤 (`agent.user_confirm`) 发送反馈。
+- `selectSession(sessionId)`：切换正在查看的会话历史。
 - `reconnectWithState(signedState, last?)`：将导出的签名状态重新写回服务器，实现恢复。
 
 ## 6. 构建与发布（可选）

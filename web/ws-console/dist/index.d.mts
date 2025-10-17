@@ -30,6 +30,12 @@ interface AgentConsoleState {
     connection: 'connected' | 'connecting' | 'disconnected' | 'error';
     messages: WebSocketMessage[];
     currentSessionId?: string;
+    viewSessionId?: string;
+    availableSessions: Array<{
+        sessionId: string;
+        updatedAt?: string;
+        messageCount: number;
+    }>;
     pendingConfirm?: ConfirmMessage | null;
     lastEventId?: string | null;
     lastSeq?: number;
@@ -104,12 +110,14 @@ interface Ctx {
         last_event_id?: string;
         last_seq?: number;
     }) => void;
+    selectSession: (sessionId: string) => void;
 }
 declare function MyAgentProvider(props: MyAgentProviderProps): react_jsx_runtime.JSX.Element;
 declare function useMyAgent(): Ctx;
 
-declare function MyAgentConsole({ className }: {
+declare function MyAgentConsole({ className, theme, }: {
     className?: string;
+    theme?: 'dark' | 'light';
 }): react_jsx_runtime.JSX.Element;
 
 export { type AgentConsoleState, type AgentEvent, AgentWSClient, type ConfirmMessage, MyAgentConsole, MyAgentProvider, type SystemEvent, type UserEvent, type WebSocketMessage, useMyAgent };
