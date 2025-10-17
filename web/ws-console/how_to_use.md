@@ -131,8 +131,7 @@ npm install --save ../web/ws-console
 将 `web/ws-console` 目录推送到内部 Git 仓库后，可在其他项目内通过 Git URL 安装：
 
 ```bash
-npm install git+https://your.git.server/your-repo.git#subdirectory=web/ws-console
-# 或使用 SSH：git+ssh://git@your.git.server/your-repo.git#subdirectory=web/ws-console
+npm install git+https://github.com/JasonDZS/myagent.git#subdirectory=web/ws-console
 ```
 
 - 确保 `package.json`、`dist/` 等发布产物已提交到仓库，或在仓库中配置 `prepare`/`postinstall` 脚本自动执行 `npm run build`。
