@@ -234,16 +234,21 @@ user.ack (acknowledging receipt)
 | `system.heartbeat` | `{timestamp}` | Keep-alive signal |
 | `system.error` | `{error: "..."}` | System-level error |
 
-### Error Events (Proposed)
+### Error Events (Implemented)
 
-| Event | When | Metadata |
-|-------|------|----------|
-| `error.validation` | Input validation fails | Validation errors |
-| `error.timeout` | Operation exceeds timeout | Timeout value |
-| `error.retry` | Automatic retry triggered | Attempt count |
-| `error.rate_limited` | Rate limit exceeded | Retry-After |
-| `error.recovery_failed` | Unrecoverable error | Final error |
-| `error.connection_lost` | Connection failure | Disconnect info |
+Comprehensive error handling and recovery events. See `ERROR_RECOVERY_GUIDE.md` for detailed recovery strategies.
+
+| Event | When | Metadata | Status |
+|-------|------|----------|--------|
+| `error.validation` | Input validation fails | Validation errors, field constraints | ✅ Production |
+| `error.timeout` | Operation exceeds timeout | Timeout value, stage, retry details | ✅ Production |
+| `error.execution` | Execution fails | Error type, context, recoverable flag | ✅ Production |
+| `error.retry` | Automatic retry triggered | Attempt count, delay, original error | ✅ Production |
+| `error.recovery_started` | Recovery attempt initiated | Recovery action, estimated duration | ✅ Production |
+| `error.recovery_success` | Recovery succeeded | Recovery time, attempt count | ✅ Production |
+| `error.recovery_failed` | Recovery failed | Error code, original/recovery errors | ✅ Production |
+
+**Status**: All error events are production-ready. Full implementations in `myagent/ws/events.py` (ErrorEvents class) and `ERROR_RECOVERY_GUIDE.md`.
 
 ## Payload Examples
 

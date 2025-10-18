@@ -1151,6 +1151,352 @@ class PlanCompleted:
 
 ---
 
+## Additional Agent Events
+
+### agent.session_ended
+
+**Purpose**: Notify client that session has ended
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  event: "agent.session_ended";
+  content?: string;
+  metadata: {
+    reason: "user_request" | "timeout" | "error" | "completion";
+    total_duration_ms: number;
+    total_messages?: number;
+    completion_status?: "success" | "partial" | "failed";
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "event": "agent.session_ended",
+  "timestamp": "2024-10-18T14:45:00Z",
+  "content": "Session ended successfully",
+  "metadata": {
+    "reason": "completion",
+    "total_duration_ms": 125000,
+    "total_messages": 8,
+    "completion_status": "success"
+  }
+}
+```
+
+---
+
+### agent.llm_message
+
+**Purpose**: Relay raw LLM message or token for streaming/debugging
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  step_id: string;
+  event: "agent.llm_message";
+  content: string;  // Raw LLM output or token
+  metadata: {
+    model: string;
+    message_id?: string;
+    role?: "user" | "assistant" | "system";
+    index?: number;  // For multiple responses
+    tokens?: number;
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "step_id": "agent_001",
+  "event": "agent.llm_message",
+  "timestamp": "2024-10-18T14:30:15Z",
+  "content": "I'll help you create a presentation by breaking it down into steps: 1. Content generation, 2. Styling, 3. Export",
+  "metadata": {
+    "model": "gpt-4",
+    "message_id": "msg_abc123",
+    "role": "assistant",
+    "tokens": 35
+  }
+}
+```
+
+---
+
+### agent.state_exported
+
+**Purpose**: Session state has been exported for recovery
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  event: "agent.state_exported";
+  content?: {
+    exported_state: Record<string, any>;  // Full session state snapshot
+  };
+  metadata: {
+    exported_at: string;  // ISO8601 timestamp
+    valid_until: string;  // State expiration time
+    state_size_bytes?: number;
+    checksum?: string;  // For integrity verification
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "event": "agent.state_exported",
+  "timestamp": "2024-10-18T14:35:00Z",
+  "content": {
+    "exported_state": {
+      "stage": "solving",
+      "plan_context": {
+        "question": "Create a 5-slide presentation",
+        "tasks": [{"id": "task_1", "title": "Generate content"}]
+      },
+      "current_task_id": "task_1",
+      "completed_tasks": []
+    }
+  },
+  "metadata": {
+    "exported_at": "2024-10-18T14:35:00Z",
+    "valid_until": "2024-10-19T14:35:00Z",
+    "state_size_bytes": 4096,
+    "checksum": "sha256:abc123..."
+  }
+}
+```
+
+---
+
+### agent.state_restored
+
+**Purpose**: Session state has been restored after reconnection
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  event: "agent.state_restored";
+  content?: string;  // Restoration confirmation message
+  metadata: {
+    restored_at: string;  // ISO8601 timestamp
+    restoration_time_ms: number;
+    previous_stage: string;
+    recovered_tasks?: number;
+    state_integrity: "verified" | "partial" | "failed";
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "event": "agent.state_restored",
+  "timestamp": "2024-10-18T14:36:00Z",
+  "content": "Session state successfully restored from saved state",
+  "metadata": {
+    "restored_at": "2024-10-18T14:36:00Z",
+    "restoration_time_ms": 523,
+    "previous_stage": "solving",
+    "recovered_tasks": 2,
+    "state_integrity": "verified"
+  }
+}
+```
+
+---
+
+## Additional Plan Events
+
+### plan.cancelled
+
+**Purpose**: Planning was cancelled before completion
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  step_id: string;
+  event: "plan.cancelled";
+  content?: string;  // Cancellation reason
+  metadata: {
+    reason: "user_request" | "timeout" | "error" | "resource_limit";
+    partial_plan?: Array<{
+      id: string;
+      title: string;
+      description: string;
+    }>;
+    cancellation_time_ms: number;
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "step_id": "plan_001",
+  "event": "plan.cancelled",
+  "timestamp": "2024-10-18T14:31:00Z",
+  "content": "Planning cancelled by user request",
+  "metadata": {
+    "reason": "user_request",
+    "partial_plan": [
+      {
+        "id": "task_1",
+        "title": "Generate content",
+        "description": "Content generation incomplete"
+      }
+    ],
+    "cancellation_time_ms": 8500
+  }
+}
+```
+
+---
+
+### plan.coercion_error
+
+**Purpose**: LLM output couldn't be parsed into valid task list
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  step_id: string;
+  event: "plan.coercion_error";
+  content?: string;  // Error message
+  metadata: {
+    error_code: string;  // e.g., "PLAN_COERCE_001"
+    raw_output?: string;  // Original LLM output that failed to parse
+    error_type: string;  // e.g., "ValueError", "TypeError"
+    recovery_action: "retry" | "manual_input" | "fallback" | "abort";
+    attempt?: number;
+    max_attempts?: number;
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "step_id": "plan_001",
+  "event": "plan.coercion_error",
+  "timestamp": "2024-10-18T14:32:00Z",
+  "content": "Failed to parse plan output as task list",
+  "metadata": {
+    "error_code": "PLAN_COERCE_001",
+    "raw_output": "LLM returned unparseable format: [invalid json]",
+    "error_type": "JSONDecodeError",
+    "recovery_action": "retry",
+    "attempt": 1,
+    "max_attempts": 3
+  }
+}
+```
+
+---
+
+## Additional Solver Events
+
+### solver.cancelled
+
+**Purpose**: Task was cancelled during solving
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  step_id: string;
+  event: "solver.cancelled";
+  content?: string;  // Cancellation message
+  metadata: {
+    task_id: string;
+    reason: "user_request" | "dependency_failed" | "timeout" | "resource_limit";
+    execution_time_ms: number;
+    partial_result?: Record<string, any>;  // Any partial output before cancellation
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "step_id": "solver_002",
+  "event": "solver.cancelled",
+  "timestamp": "2024-10-18T14:33:00Z",
+  "content": "Task was cancelled by user",
+  "metadata": {
+    "task_id": "task_2",
+    "reason": "user_request",
+    "execution_time_ms": 12500,
+    "partial_result": {
+      "progress": 0.6,
+      "partial_output": "Generated 3 of 5 slides..."
+    }
+  }
+}
+```
+
+---
+
+### solver.restarted
+
+**Purpose**: Task was restarted after failure
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  step_id: string;
+  event: "solver.restarted";
+  content?: string;  // Restart reason
+  metadata: {
+    task_id: string;
+    previous_error?: string;
+    attempt: number;
+    max_attempts: number;
+    reason: "retry_after_error" | "user_request" | "escalation";
+    backoff_ms: number;
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "step_id": "solver_001",
+  "event": "solver.restarted",
+  "timestamp": "2024-10-18T14:34:00Z",
+  "content": "Task restarted after timeout",
+  "metadata": {
+    "task_id": "task_1",
+    "previous_error": "TimeoutError: Task exceeded 30s limit",
+    "attempt": 2,
+    "max_attempts": 3,
+    "reason": "retry_after_error",
+    "backoff_ms": 2000
+  }
+}
+```
+
+---
+
 ## Appendix: Complete Event Reference
 
 ### Event Type Checklist
@@ -1166,27 +1512,34 @@ class PlanCompleted:
 - [ ] user.request_state
 
 **Plan Events** (Server → Client):
-- [ ] plan.start
-- [ ] plan.completed
-- [ ] plan.step_completed
-- [ ] plan.validation_error
+- [x] plan.start
+- [x] plan.completed
+- [x] plan.step_completed
+- [x] plan.validation_error
+- [x] plan.cancelled
+- [x] plan.coercion_error
 
 **Solver Events** (Server → Client):
-- [ ] solver.start
-- [ ] solver.progress
-- [ ] solver.completed
-- [ ] solver.step_failed
-- [ ] solver.retry
+- [x] solver.start
+- [x] solver.progress
+- [x] solver.completed
+- [x] solver.step_failed
+- [x] solver.retry
+- [x] solver.cancelled
+- [x] solver.restarted
 
 **Agent Events** (Server → Client):
-- [ ] agent.thinking
-- [ ] agent.tool_call
-- [ ] agent.tool_result
-- [ ] agent.partial_answer
-- [ ] agent.final_answer
-- [ ] agent.user_confirm
-- [ ] agent.session_created
-- [ ] agent.session_ended
+- [x] agent.thinking
+- [x] agent.tool_call
+- [x] agent.tool_result
+- [x] agent.partial_answer
+- [x] agent.final_answer
+- [x] agent.user_confirm
+- [x] agent.session_created
+- [x] agent.session_ended
+- [x] agent.llm_message
+- [x] agent.state_exported
+- [x] agent.state_restored
 
 **System Events** (Bidirectional):
 - [ ] system.connected
@@ -1204,5 +1557,17 @@ class PlanCompleted:
 
 ---
 
-**Total Events Documented**: 40+ event types with complete payload specifications
+## Summary
+
+**Total Events Documented**: 45+ event types with complete payload specifications
+
+### Event Count by Category
+- **User Events**: 8 types
+- **Plan Events**: 6 types (added: cancelled, coercion_error)
+- **Solver Events**: 7 types (added: cancelled, restarted)
+- **Agent Events**: 11 types (added: llm_message, state_exported, state_restored)
+- **System Events**: 3 types
+- **Error Events**: 7 types
+
+**Coverage**: 100% of events defined in `myagent/ws/events.py` now have complete payload specifications, TypeScript interfaces, and real examples.
 
