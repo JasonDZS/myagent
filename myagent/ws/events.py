@@ -8,21 +8,65 @@ from pydantic import Field
 
 
 class EventProtocol(BaseModel):
-    """WebSocket event protocol."""
+    """WebSocket event protocol.
 
-    session_id: str | None = Field(None, description="Session ID")
-    connection_id: str | None = Field(None, description="Connection ID")
-    step_id: str | None = Field(None, description="Step ID")
-    event: str = Field(..., description="Event type")
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
-    content: str | dict[str, Any] | None = Field(None, description="Event content")
-    metadata: dict[str, Any] | None = Field(
-        default_factory=dict, description="Metadata"
+    All server-to-client and client-to-server communication uses this structure.
+    """
+
+    session_id: str | None = Field(None, description="Unique session identifier")
+    connection_id: str | None = Field(None, description="WebSocket connection ID")
+    step_id: str | None = Field(None, description="Request/response correlation ID (for pairing)")
+    event: str = Field(..., description="Event type (e.g., 'plan.start', 'agent.thinking')")
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="ISO8601 timestamp when event was created"
     )
+    content: str | dict[str, Any] | None = Field(
+        None,
+        description="Main event payload: user-visible text or primary data structure"
+    )
+    metadata: dict[str, Any] | None = Field(
+        default_factory=dict,
+        description="Supplementary machine-readable data: statistics, context, options"
+    )
+
+    class Config:
+        """Pydantic configuration"""
+        json_schema_extra = {
+            "examples": [
+                {
+                    "session_id": "sess_001",
+                    "event": "agent.thinking",
+                    "timestamp": "2024-10-18T12:00:00Z",
+                    "content": "Processing query...",
+                    "metadata": {"model": "gpt-4", "max_tokens": 2000}
+                },
+                {
+                    "session_id": "sess_001",
+                    "event": "plan.completed",
+                    "step_id": "plan_1",
+                    "content": {"tasks": [{"id": 1, "title": "..."}]},
+                    "metadata": {"task_count": 1, "plan_summary": "..."}
+                }
+            ]
+        }
+
+    # Content vs Metadata Guidance:
+    # - content: What the user needs to see or primary payload
+    #   Examples: final_answer, plan tasks, error message
+    # - metadata: Structured supplementary data for processing
+    #   Examples: execution_time, tokens_used, task details
 
 
 class UserEvents:
-    """User event types"""
+    """User (client) event types - sent from client to server.
+
+    Usage patterns:
+    - MESSAGE: content = user query text, metadata = source/client info
+    - RESPONSE: content = {approved, feedback}, metadata = response context
+    - ACK: metadata = {last_seq, received_count} for reliable delivery
+    - RECONNECT*: content/metadata = session recovery info
+    """
 
     MESSAGE = "user.message"
     # New: direct task submission to run solver without planning
@@ -42,7 +86,15 @@ class UserEvents:
 
 
 class PlanEvents:
-    """Plan stage events (base names; may be namespaced)."""
+    """Plan stage events (planning phase of pipeline).
+
+    Usage patterns:
+    - START: content = {question}, metadata = plan context
+    - COMPLETED: content = {tasks list}, metadata = {task_count, plan_summary, stats}
+    - CANCELLED: metadata = {reason}
+    - STEP_COMPLETED: metadata = {step_name, step_index}
+    - VALIDATION_ERROR: content = error message, metadata = {error_code, field, constraint}
+    """
 
     START = "plan.start"
     COMPLETED = "plan.completed"
@@ -53,7 +105,17 @@ class PlanEvents:
 
 
 class SolverEvents:
-    """Solver stage events (per-task)."""
+    """Solver stage events (task solving phase of pipeline).
+
+    Usage patterns:
+    - START: metadata = {task, attempt}, content empty
+    - COMPLETED: content = {task, result}, metadata = {execution_time_ms, stats}
+    - CANCELLED: metadata = {reason}
+    - RESTARTED: metadata = {attempt, reason}
+    - PROGRESS: metadata = {progress_percent, current_step}
+    - STEP_FAILED: content = error, metadata = {step_name, error_code, recovery_action}
+    - RETRY: metadata = {attempt, max_attempts, backoff_ms}
+    """
 
     START = "solver.start"
     COMPLETED = "solver.completed"
@@ -78,7 +140,18 @@ class PipelineEvents:
 
 
 class AgentEvents:
-    """Agent event types (agent.*) and legacy aliases."""
+    """Agent event types (reasoning and execution).
+
+    Usage patterns:
+    - THINKING: content = status text, metadata = {model, max_tokens}
+    - TOOL_CALL: content = description, metadata = {tool_name, args, call_id}
+    - TOOL_RESULT: content = result summary, metadata = {result_data, execution_time_ms}
+    - PARTIAL_ANSWER: content = streaming text, metadata = {completion_percent}
+    - FINAL_ANSWER: content = complete answer, metadata = {type, generation_time_ms}
+    - USER_CONFIRM: content = confirmation text, metadata = {tasks, options}
+    - ERROR: content = error message, metadata = {error_code, error_type, context}
+    - SESSION_*: metadata = session context
+    """
 
     THINKING = "agent.thinking"
     TOOL_CALL = "agent.tool_call"
@@ -111,7 +184,16 @@ class SystemEvents:
 
 
 class ErrorEvents:
-    """Error and recovery events for comprehensive error handling"""
+    """Error and recovery events for comprehensive error handling.
+
+    Usage patterns:
+    - EXECUTION: content = error message, metadata = {error_code, error_type, context}
+    - VALIDATION: content = validation error, metadata = {error_code, field, constraint}
+    - TIMEOUT: content = timeout message, metadata = {timeout_seconds, stage}
+    - RECOVERY_STARTED: content = recovery status, metadata = {recovery_action}
+    - RECOVERY_SUCCESS: content = "Recovery successful", metadata = {recovery_time_ms}
+    - RECOVERY_FAILED: content = failure reason, metadata = {error_code, retry_action}
+    """
 
     EXECUTION = "error.execution"             # 执行错误
     VALIDATION = "error.validation"           # 验证错误
