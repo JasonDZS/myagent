@@ -17,6 +17,7 @@ from myagent.agent import (
     create_plan_solver,
 )
 from myagent.tool.base_tool import BaseTool, ToolResult
+from myagent.stats import get_stats_manager
 
 from data2ppt import (
     DatabaseQueryTool,
@@ -576,6 +577,22 @@ async def orchestrate(question: str) -> None:
 
     result = await pipeline.run(question)
     _print_result(result)
+
+    # Print model usage statistics by agent (reference: examples/web_search.py)
+    try:
+        snapshot = result.metrics or get_stats_manager().snapshot()
+        models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
+        by_agent_model = models.get("by_agent", {}) if isinstance(models, dict) else {}
+        if by_agent_model:
+            print("\n--- Model Usage (by agent) ---")
+            for aname, models_map in by_agent_model.items():
+                for model, m in models_map.items():
+                    calls = m.get("calls")
+                    tin = m.get("input_tokens")
+                    tout = m.get("output_tokens")
+                    print(f"  {aname}@{model}: calls={calls} in={tin} out={tout}")
+    except Exception as e:
+        print(f"[stats] Failed to get model usage statistics: {e}")
 
     aggregate = result.aggregate_output
     if isinstance(aggregate, dict) and isinstance(aggregate.get("ppt_result"), ToolResult):

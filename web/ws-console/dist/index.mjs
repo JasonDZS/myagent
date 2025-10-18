@@ -486,7 +486,7 @@ import { useEffect as useEffect3, useRef as useRef2 } from "react";
 
 // src/components/MessageItem.tsx
 import { useEffect as useEffect2, useMemo as useMemo2, useState as useState2 } from "react";
-import { User, Bot, Settings, ListTodo, Wrench, Puzzle, GitMerge } from "lucide-react";
+import { User, Bot, Settings, ListTodo, Wrench, Puzzle, GitMerge, Cpu, Hash, LogIn, LogOut } from "lucide-react";
 import { Fragment, jsx as jsx2, jsxs } from "react/jsx-runtime";
 function stringifyContent(content) {
   if (content == null) return "";
@@ -549,6 +549,7 @@ function MessageItem({ m, onConfirm, onDecline }) {
   const preferred = typeof m.show_content === "string" ? m.show_content : friendlyFromClientFallback(m);
   const body = stringifyContent(preferred ?? m.content);
   const ts = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : "";
+  const stats = useMemo2(() => computeStats(m), [m]);
   const isConfirm = event === "agent.user_confirm";
   const [collapsed, setCollapsed] = useState2(() => !isConfirm);
   const category = getCategory(event);
@@ -633,7 +634,27 @@ function MessageItem({ m, onConfirm, onDecline }) {
             ts
           ] })
         ] }),
-        /* @__PURE__ */ jsx2("button", { className: "ma-linkbtn", onClick: () => setCollapsed((v) => !v), children: collapsed ? "\u5C55\u5F00" : "\u6298\u53E0" })
+        /* @__PURE__ */ jsxs("div", { className: "ma-right", children: [
+          stats?.show && /* @__PURE__ */ jsxs("div", { className: "ma-stats ma-stats-head", children: [
+            stats.model && /* @__PURE__ */ jsxs("span", { className: "ma-chip", title: "\u6A21\u578B/Agent", children: [
+              /* @__PURE__ */ jsx2(Cpu, { size: 12 }),
+              /* @__PURE__ */ jsx2("span", { className: "ma-chip-text", children: stats.model })
+            ] }),
+            /* @__PURE__ */ jsxs("span", { className: "ma-chip", title: "\u8C03\u7528\u6B21\u6570", children: [
+              /* @__PURE__ */ jsx2(Hash, { size: 12 }),
+              /* @__PURE__ */ jsx2("span", { className: "ma-chip-text", children: stats.calls })
+            ] }),
+            /* @__PURE__ */ jsxs("span", { className: "ma-chip", title: "\u8F93\u5165 tokens", children: [
+              /* @__PURE__ */ jsx2(LogIn, { size: 12 }),
+              /* @__PURE__ */ jsx2("span", { className: "ma-chip-text", children: stats.inputTokens })
+            ] }),
+            /* @__PURE__ */ jsxs("span", { className: "ma-chip", title: "\u8F93\u51FA tokens", children: [
+              /* @__PURE__ */ jsx2(LogOut, { size: 12 }),
+              /* @__PURE__ */ jsx2("span", { className: "ma-chip-text", children: stats.outputTokens })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsx2("button", { className: "ma-linkbtn", onClick: () => setCollapsed((v) => !v), children: collapsed ? "\u5C55\u5F00" : "\u6298\u53E0" })
+        ] })
       ] }),
       !collapsed && /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }, children: [
         /* @__PURE__ */ jsx2("strong", { children: title }),
@@ -715,7 +736,27 @@ function MessageItem({ m, onConfirm, onDecline }) {
           ts
         ] })
       ] }),
-      /* @__PURE__ */ jsx2("button", { className: "ma-linkbtn", onClick: () => setCollapsed((v) => !v), children: collapsed ? "\u5C55\u5F00" : "\u6298\u53E0" })
+      /* @__PURE__ */ jsxs("div", { className: "ma-right", children: [
+        stats?.show && /* @__PURE__ */ jsxs("div", { className: "ma-stats ma-stats-head", children: [
+          stats.model && /* @__PURE__ */ jsxs("span", { className: "ma-chip", title: "\u6A21\u578B/Agent", children: [
+            /* @__PURE__ */ jsx2(Cpu, { size: 12 }),
+            /* @__PURE__ */ jsx2("span", { className: "ma-chip-text", children: stats.model })
+          ] }),
+          /* @__PURE__ */ jsxs("span", { className: "ma-chip", title: "\u8C03\u7528\u6B21\u6570", children: [
+            /* @__PURE__ */ jsx2(Hash, { size: 12 }),
+            /* @__PURE__ */ jsx2("span", { className: "ma-chip-text", children: stats.calls })
+          ] }),
+          /* @__PURE__ */ jsxs("span", { className: "ma-chip", title: "\u8F93\u5165 tokens", children: [
+            /* @__PURE__ */ jsx2(LogIn, { size: 12 }),
+            /* @__PURE__ */ jsx2("span", { className: "ma-chip-text", children: stats.inputTokens })
+          ] }),
+          /* @__PURE__ */ jsxs("span", { className: "ma-chip", title: "\u8F93\u51FA tokens", children: [
+            /* @__PURE__ */ jsx2(LogOut, { size: 12 }),
+            /* @__PURE__ */ jsx2("span", { className: "ma-chip-text", children: stats.outputTokens })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsx2("button", { className: "ma-linkbtn", onClick: () => setCollapsed((v) => !v), children: collapsed ? "\u5C55\u5F00" : "\u6298\u53E0" })
+      ] })
     ] }),
     collapsed ? /* @__PURE__ */ jsx2("div", { className: "ma-muted ma-preview", children: preview }) : /* @__PURE__ */ jsx2("div", { children: body })
   ] }) });
@@ -748,6 +789,73 @@ function getIcon(cat) {
       return GitMerge;
     default:
       return Settings;
+  }
+}
+function computeStats(m) {
+  const ev = String(m.event || "");
+  try {
+    let statsList;
+    let model;
+    let agentName;
+    if (ev === "plan.completed") {
+      const c = m.content;
+      if (Array.isArray(c?.statistics)) statsList = c.statistics;
+      if (statsList && statsList.length > 0) {
+        const agents = Array.from(new Set(statsList.map((x) => x?.agent).filter(Boolean)));
+        agentName = agents.length === 1 ? String(agents[0]) : void 0;
+      }
+    } else if (ev === "solver.completed") {
+      const c = m.content;
+      const res = c?.result;
+      if (Array.isArray(res?.statistics)) statsList = res.statistics;
+      agentName = typeof res?.agent_name === "string" ? res.agent_name : void 0;
+      if (typeof res?.model === "string" && res.model) {
+        model = res.model;
+      }
+    } else {
+      return null;
+    }
+    if (!statsList || statsList.length === 0) return null;
+    const models = Array.from(
+      new Set(
+        statsList.map((x) => x?.model || x?.metadata?.model).filter((v) => typeof v === "string" && v)
+      )
+    );
+    if (!model) {
+      if (models.length === 1) {
+        model = String(models[0]);
+      } else if (models.length > 1) {
+        model = models.join(", ");
+      }
+    }
+    if (!model && ev === "plan.completed") {
+      const c = m.content;
+      const metrics = c?.metrics;
+      const byAgent = metrics?.models?.by_agent;
+      const agentMap = agentName && byAgent ? byAgent[agentName] : void 0;
+      if (agentMap && typeof agentMap === "object") {
+        const keys = Object.keys(agentMap);
+        if (keys.length === 1) model = keys[0];
+        else if (keys.length > 1) model = keys.join(", ");
+      }
+    }
+    let input = 0;
+    let output = 0;
+    for (const it of statsList) {
+      const i = Number(it?.input_tokens ?? 0);
+      const o = Number(it?.output_tokens ?? 0);
+      if (Number.isFinite(i)) input += i;
+      if (Number.isFinite(o)) output += o;
+    }
+    return {
+      show: true,
+      model,
+      calls: statsList.length,
+      inputTokens: input,
+      outputTokens: output
+    };
+  } catch {
+    return null;
   }
 }
 

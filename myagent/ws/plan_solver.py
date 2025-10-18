@@ -233,9 +233,22 @@ class PlanSolverPipeline:
 
                 # Annotate origin/agent for easier downstream attribution
                 agent_name = getattr(plan_agent, "name", self.planner.name)
+                stats_model = None
+                try:
+                    if isinstance(stats_obj, dict):
+                        stats_model = stats_obj.get("model")
+                except Exception:
+                    stats_model = None
+                if not stats_model:
+                    # Fallback to the agent's configured LLM model
+                    stats_model = getattr(getattr(plan_agent, "llm", None), "model", None)
                 for c in calls:
                     c.setdefault("origin", "plan")
                     c.setdefault("agent", agent_name)
+                    # Ensure model name is present for UI display
+                    if isinstance(c, dict) and not c.get("model"):
+                        if stats_model:
+                            c["model"] = stats_model
                 plan_statistics = calls or None
             except Exception as exc:  # pragma: no cover - safeguard
                 logger.debug(
@@ -344,9 +357,19 @@ class PlanSolverPipeline:
                         if not calls and isinstance(stats_obj, dict):
                             calls = [stats_obj]
                         # Annotate origin/agent for downstream attribution
+                        stats_model = None
+                        try:
+                            if isinstance(stats_obj, dict):
+                                stats_model = stats_obj.get("model")
+                        except Exception:
+                            stats_model = None
+                        if not stats_model:
+                            stats_model = getattr(getattr(agent, "llm", None), "model", None)
                         for c in calls:
                             c.setdefault("origin", "solver")
                             c.setdefault("agent", getattr(agent, "name", self.solver.name))
+                            if isinstance(c, dict) and not c.get("model") and stats_model:
+                                c["model"] = stats_model
                         statistics = calls or None
                     except Exception as exc:  # pragma: no cover - safeguard
                         logger.debug(
@@ -367,6 +390,16 @@ class PlanSolverPipeline:
                     "summary": result.summary,
                     "agent_name": result.agent_name,
                 }
+                # Attach model used by the solver agent for easier client display
+                try:
+                    if 'stats_model' in locals() and stats_model:
+                        sanitized_result["model"] = stats_model
+                    else:
+                        maybe_model = getattr(getattr(agent, "llm", None), "model", None)
+                        if maybe_model:
+                            sanitized_result["model"] = maybe_model
+                except Exception:
+                    pass
                 if statistics is not None:
                     # statistics is a List[Dict] (per-call records)
                     sanitized_result["statistics"] = statistics

@@ -16,15 +16,10 @@ from websockets.server import WebSocketServerProtocol
 
 from myagent.agent.base import BaseAgent
 from myagent.logger import logger
-from .events import AgentEvents
-from .events import SystemEvents
-from .events import UserEvents
-from .events import create_event
+from .events import AgentEvents, SystemEvents, UserEvents, create_event
 from .session import AgentSession
 from .state_manager import StateManager
-from .utils import close_websocket_safely
-from .utils import is_websocket_closed
-from .utils import send_websocket_message
+from .utils import close_websocket_safely, is_websocket_closed, send_websocket_message
 from .outbound import OutboundChannel
 
 

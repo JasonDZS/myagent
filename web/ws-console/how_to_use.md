@@ -1,35 +1,30 @@
-# 在其他项目中复用 `MyAgentConsole`
+# 在项目中集成 `MyAgentConsole`
 
-`MyAgentConsole` 是一个基于 React 的现成控制台界面，内部依赖 `MyAgentProvider` 管理 WebSocket 会话和消息流。按照下面步骤，把组件安装并嵌入到任意支持 React 17/18 的项目中。
+`MyAgentConsole` 定义在 `src/components/MyAgentConsole.tsx` 中，只暴露两个可选属性：`className` 与 `theme`（`dark` | `light`）。组件内部通过 `useMyAgent()` 取得由 `MyAgentProvider` 维护的状态，渲染消息列表并在确认步骤（`agent.user_confirm`）触发 `sendResponse`。官方示例 `example/src/main.tsx` 展示了从连接 WebSocket 到构建完整控制台的全过程，下面依次拆解核心环节。
 
-## 1. 安装依赖
+## 1. 安装依赖与样式
+- 安装包：`npm install @myagent/ws-console lucide-react`
+- 在应用入口引入样式：`import '@myagent/ws-console/styles.css'`
+- `styles.css` 同时包含深浅主题，只需在渲染时通过 `theme` 属性切换。
+- 若要定制主题，可覆盖 `.ma-console`、`.ma-theme-dark`/`.ma-theme-light` 下的变量或类。
 
-```bash
-npm install @myagent/ws-console lucide-react
-# 或使用 pnpm / yarn，命令等效
-```
+## 2. 准备 Provider（连接与会话）
+`MyAgentProvider` 负责打开 WebSocket，跟踪会话，并通过上下文向 `MyAgentConsole`、`UserInput` 等组件提供状态。
 
-> `lucide-react` 是图标库，`MyAgentConsole` 在消息列表和状态栏中会引用它的若干图标。
+关键属性（参考 `example/src/main.tsx`）：
+- `wsUrl`：必填，WebSocket 服务地址。示例通过 `VITE_WS_URL` 或 `ws://localhost:8080` 设置。
+- `sessionId`：外部控制当前活跃会话。示例中在收到 `agent.session_created` 事件后更新。
+- `autoReconnect`：布尔值，启用断线重连（示例启用）。
+- `onEvent`：监听所有服务端消息，可用于同步会话或记录日志。
+- `token`（可选）：在初始化 `AgentWSClient` 时会拼入连接请求，用于服务端鉴权。
+- `showSystemLogs`（可选）：若为 `true`，会保留以 `system.*` 开头的事件并显示在消息流中。
 
-## 2. 引入样式文件
-
-组件内置深色（`dark`）和浅色（`light`）主题，通过同一份 `styles.css` 提供。将打包出来的样式文件引入到应用入口（如 `App.tsx` 或 `index.tsx`）：
-
-```tsx
-import '@myagent/ws-console/styles.css';
-```
-
-引入后，可在渲染组件时通过 `theme` 属性切换主题，默认值为 `dark`。如果需要进一步定制，可在自定义样式中覆写 `.ma-*` 相关的 CSS 变量或类名。
-
-## 3. 包裹 `MyAgentProvider`
-
-`MyAgentProvider` 负责创建 WebSocket 客户端、维护会话状态，并通过上下文向控制台组件和自定义 Hook 暴露操作能力。需要把当前会话的 `sessionId` 作为属性传入：
+示例化写法：
 
 ```tsx
-import { useCallback, useState } from 'react';
-import { MyAgentProvider, type WebSocketMessage } from '@myagent/ws-console';
+const WS_URL = (import.meta as any).env?.VITE_WS_URL || 'ws://localhost:8080';
 
-function Providers({ children }: { children: React.ReactNode }) {
+function App() {
   const [sessionId, setSessionId] = useState<string>();
 
   const handleEvent = useCallback((event: WebSocketMessage) => {
@@ -39,143 +34,70 @@ function Providers({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <MyAgentProvider
-      wsUrl="wss://your-agent-server/ws"
-      token={process.env.AGENT_TOKEN}
-      autoReconnect
-      showSystemLogs={false}
-      onEvent={handleEvent}
-      sessionId={sessionId}
-    >
-      {children}
+    <MyAgentProvider wsUrl={WS_URL} sessionId={sessionId} autoReconnect onEvent={handleEvent}>
+      {/** 控制台 UI */}
     </MyAgentProvider>
   );
 }
 ```
 
-- `wsUrl`：必填，指向 Agent WebSocket 服务地址。
-- `token`：选填，附加在连接请求中的身份凭证。
-- `autoReconnect`：默认 `true`，断线后自动重连。
-- `showSystemLogs`：为 `true` 时保留 `system.*` 类型的消息。
-- `onEvent`：可选回调，收到任意服务端消息时触发，可结合 `agent.session_created` 更新外部的 `sessionId`。
-- `sessionId`：外部控制当前正在查看/交互的会话 ID。
+### MyAgentProvider 行为速览
+- 组件首次挂载时会创建 `AgentWSClient`，状态从 `connecting` 流转为 `connected` / `error`，并在卸载时断开连接。
+- 所有消息会写入内部的 Zustand `session-store`，默认使用 `localStorage`（键名 `myagent-session-cache`）持久化，刷新后仍可读取。
+- 收到 `agent.state_exported` 事件时，会将签名状态持久化到 `localStorage`：`ma_state_<sessionId>` 与 `ma_state_latest`。
+- `showSystemLogs={false}` 时会过滤掉 `system.*` 事件，避免噪声干扰 UI。
+- 如果你在外部传入 `sessionId`，Provider 会将当前会话切换到该值；未传入时会沿用内部状态或最近一次的会话。
 
-## 4. 渲染控制台
+常见扩展点（都通过 `useMyAgent()` 或 `onEvent` 获取）：
+- 监听 `connection`/`error` 更新，提示用户重新连接。
+- 将 `state.pendingConfirm` 渲染为自定义的确认对话框，并通过 `sendResponse` 反馈。
+- 使用 `requestState()` 与 `reconnectWithState()` 完成会话导出 / 恢复。
 
-`MyAgentConsole` 负责渲染指定 `sessionId` 的消息列表与确认弹窗，不再自带输入框和会话管理。你可以在外部组合头部、输入框等 UI（`web/ws-console/example` 提供了完整示例）。控制器组件示例：
+## 3. 组合控制台 UI
+`MyAgentConsole` 只关注消息展示，因此需要结合 `useMyAgent()` 提供的操作拼装完整界面。示例中的 `ConsolePane` 做了以下工作：
+- 使用 `ConnectionStatus`、`createSession()` 等实现会话切换与状态指示。
+- 通过 `<MyAgentConsole theme={theme} />` 在中间区域呈现消息流。
+- 使用 `UserInput` 发送用户消息，并在 `state.generating` 时显示 loading 或调用 `cancel()`。
+- 允许用户切换 `dark`/`light` 主题并将选项传给 `MyAgentConsole`。
+
+最小可用组合示例：
 
 ```tsx
-import React, { useCallback, useState } from 'react';
-import { MyAgentProvider, MyAgentConsole, useMyAgent, type WebSocketMessage } from '@myagent/ws-console';
-import { UserInput } from '@myagent/ws-console/components/UserInput';
-
-function ConsoleShell() {
+function ConsolePane() {
   const { state, createSession, sendUserMessage, cancel } = useMyAgent();
+  const sessionReady = state.connection === 'connected' && !!state.currentSessionId;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 560 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <button onClick={() => createSession()}>新建会话</button>
-      <MyAgentConsole />
+      <MyAgentConsole theme="dark" />
       <UserInput
-        onSend={(text) => sendUserMessage(text)}
-        disabled={state.connection !== 'connected' || !state.currentSessionId}
-        generating={state.generating}
+        disabled={!sessionReady}
+        generating={!!state.generating}
+        onSend={(text) => sessionReady && sendUserMessage(text)}
         onCancel={() => cancel()}
       />
     </div>
   );
 }
-
-export default function AgentPage() {
-  const [sessionId, setSessionId] = useState<string>();
-  const handleEvent = useCallback((event: WebSocketMessage) => {
-    if (event.event === 'agent.session_created' && event.session_id) {
-      setSessionId(event.session_id);
-    }
-  }, []);
-
-  return (
-    <MyAgentProvider wsUrl="wss://your-agent-server/ws" sessionId={sessionId} onEvent={handleEvent}>
-      <ConsoleShell />
-    </MyAgentProvider>
-  );
-}
 ```
 
-所有消息依旧基于 Zustand 缓存在浏览器 `localStorage` 中，刷新页面后仍可查看历史。
+## 4. 使用辅助功能
+`example/src/main.tsx` 还展示了多个常见增强点：
+- 拖拽左右布局：`SplitView` 使用 `ref` 控制可视区域宽度。
+- 会话恢复：通过 `requestState()` 导出服务器签名的状态，`reconnectWithState()` 将其写回（示例从 `localStorage` 读取 `ma_state_latest`）。
+- 主题切换：外层维护 `theme` 状态并传给 `MyAgentConsole`。
+- 会话预览：利用 `state.availableSessions` 填充 `<select>`，实现历史记录回放。
 
-## 5. 扩展自定义行为
+这些能力均来自 `useMyAgent()` 暴露的上下文：
+- `state.messages`：当前查看会话的事件列表（`MyAgentConsole` 将其渲染为消息流）。
+- `state.generating`：是否有计划/工具调用/回答在进行。
+- `state.connection`、`state.lastEventId` 等连接与同步元数据。
+- 方法：`createSession`、`selectSession`、`sendUserMessage`、`sendResponse`、`requestState`、`reconnectWithState`、`cancel` 等。
 
-除了直接使用控制台，还可以通过 `useMyAgent()` 访问底层能力，构建自定义 UI 或增加业务逻辑：
+## 5. 运行与调试
+- 在本仓库执行 `npm install`、`npm run dev -- --open` 可启动示例页面，直接查看控制台效果。
+- 生产环境可执行 `npm run build`，生成的 `dist/` 目录包含组件、类型与样式，可通过 npm、Git 子目录或工作区的方式复用。
+- 如果集成到现有项目，请确认构建系统支持处理 `.css` 与 `tsx`/`ts`，并在打包后保留 `@myagent/ws-console/styles.css`。
 
-```tsx
-import { useMyAgent } from '@myagent/ws-console';
-
-function CustomFooter() {
-  const { state, createSession, selectSession, sendUserMessage, cancel, solveTasks } = useMyAgent();
-
-  return (
-    <footer>
-      当前连接：{state.connection}
-      <div>
-        历史会话数量：{state.availableSessions.length}
-        {state.availableSessions.map((session) => (
-          <button key={session.sessionId} onClick={() => selectSession(session.sessionId)}>
-            查看 {session.sessionId}
-          </button>
-        ))}
-      </div>
-      <button onClick={() => createSession()}>新建会话</button>
-      <button onClick={() => sendUserMessage({ text: 'ping' })}>发送消息</button>
-      <button onClick={() => cancel()}>停止当前流程</button>
-      <button onClick={() => solveTasks([{ task_id: 'custom', description: 'Run job' }])}>
-        下发任务
-      </button>
-    </footer>
-  );
-}
-```
-
-常用字段和方法：
-
-- `state.messages`：当前 `sessionId` 对应的服务端事件数组，`MyAgentConsole` 会自动渲染。
-- `state.generating`：计划、聚合、工具调用或「思考中」状态的组合标记。
-- `state.availableSessions`：本地缓存的会话列表（按照最近更新时间排序）。
-- `state.viewSessionId`：当前查看的会话 ID（可能与 `state.currentSessionId` 不同）。
-- `sendUserMessage(content)`：向当前会话推送用户消息。
-- `sendResponse(stepId, content)`：对确认步骤 (`agent.user_confirm`) 发送反馈。
-- `selectSession(sessionId)`：切换正在查看的会话历史。
-- `reconnectWithState(signedState, last?)`：将导出的签名状态重新写回服务器，实现恢复。
-
-## 6. 构建与发布（可选）
-
-项目内置 `tsup` 配置，可在本仓库执行：
-
-```bash
-cd web/ws-console
-npm run build
-```
-
-命令会在 `dist/` 下产出 ESM/CJS/类型声明及样式文件。复用时有两种常见方式：
-
-### 方式 A：本地路径依赖
-
-如果在 monorepo 内自用，可在目标项目中直接引用本地路径：
-
-```bash
-npm install --save ../web/ws-console
-# 或使用 npm link/pnpm/yarn workspace 功能
-```
-
-这样即使不发布到 npm，也能在多个项目之间复用同一套组件与样式。
-
-### 方式 B：通过 Git 仓库安装
-
-将 `web/ws-console` 目录推送到内部 Git 仓库后，可在其他项目内通过 Git URL 安装：
-
-```bash
-npm install git+https://github.com/JasonDZS/myagent.git#subdirectory=web/ws-console
-```
-
-- 确保 `package.json`、`dist/` 等发布产物已提交到仓库，或在仓库中配置 `prepare`/`postinstall` 脚本自动执行 `npm run build`。
-- Git 安装默认会执行 `prepare`，如果当前 `package.json` 没有该脚本，请在推送前运行 `npm run build` 并提交生成的 `dist/` 目录。
+通过以上步骤，即可在任何 React 项目中快速复用 `MyAgentConsole`，既可以照搬 `example/src/main.tsx` 的完整布局，也可以只保留消息面板，结合自定义的主题、会话调度与输入体验。

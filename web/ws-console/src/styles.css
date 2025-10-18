@@ -284,6 +284,46 @@
   margin-bottom: 4px;
 }
 
+.ma-msg-head .ma-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* When stats are in header, reset margins */
+.ma-msg-head .ma-stats {
+  margin: 0;
+}
+
+/* Stats chips row */
+.ma-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 6px 0;
+}
+
+.ma-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ma-icon-bg);
+  border: 1px solid var(--ma-border);
+  color: var(--ma-muted);
+  font-size: 12px;
+}
+
+.ma-chip svg {
+  color: var(--ma-muted);
+}
+
+.ma-chip-text {
+  color: var(--ma-text);
+}
+
 .ma-msg-head .ma-left {
   display: flex;
   align-items: center;

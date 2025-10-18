@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { User, Bot, Settings, ListTodo, Wrench, Puzzle, GitMerge } from 'lucide-react';
+import { User, Bot, Settings, ListTodo, Wrench, Puzzle, GitMerge, Cpu, Hash, LogIn, LogOut } from 'lucide-react';
 import type { WebSocketMessage, ConfirmMessage } from '../types';
 
 function stringifyContent(content: any): string {
@@ -67,6 +67,7 @@ export function MessageItem({ m, onConfirm, onDecline }: { m: WebSocketMessage; 
   const preferred = typeof (m as any).show_content === 'string' ? (m as any).show_content : friendlyFromClientFallback(m);
   const body = stringifyContent(preferred ?? m.content);
   const ts = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+  const stats = useMemo(() => computeStats(m), [m]);
   // Determine confirm early to set default collapsed state
   const isConfirm = event === 'agent.user_confirm';
   const [collapsed, setCollapsed] = useState<boolean>(() => !isConfirm);
@@ -157,7 +158,31 @@ export function MessageItem({ m, onConfirm, onDecline }: { m: WebSocketMessage; 
               <span className={`ma-icon ${category}`}><Icon size={16} /></span>
               <div className="ma-muted">[{label}] {ts}</div>
             </div>
-            <button className="ma-linkbtn" onClick={() => setCollapsed((v) => !v)}>{collapsed ? '展开' : '折叠'}</button>
+            <div className="ma-right">
+              {stats?.show && (
+                <div className="ma-stats ma-stats-head">
+                  {stats.model && (
+                    <span className="ma-chip" title="模型/Agent">
+                      <Cpu size={12} />
+                      <span className="ma-chip-text">{stats.model}</span>
+                    </span>
+                  )}
+                  <span className="ma-chip" title="调用次数">
+                    <Hash size={12} />
+                    <span className="ma-chip-text">{stats.calls}</span>
+                  </span>
+                  <span className="ma-chip" title="输入 tokens">
+                    <LogIn size={12} />
+                    <span className="ma-chip-text">{stats.inputTokens}</span>
+                  </span>
+                  <span className="ma-chip" title="输出 tokens">
+                    <LogOut size={12} />
+                    <span className="ma-chip-text">{stats.outputTokens}</span>
+                  </span>
+                </div>
+              )}
+              <button className="ma-linkbtn" onClick={() => setCollapsed((v) => !v)}>{collapsed ? '展开' : '折叠'}</button>
+            </div>
           </div>
           {!collapsed && (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -243,7 +268,31 @@ export function MessageItem({ m, onConfirm, onDecline }: { m: WebSocketMessage; 
             <span className={`ma-icon ${category}`}><Icon size={16} /></span>
             <div className="ma-muted">[{label}] {ts}</div>
           </div>
-          <button className="ma-linkbtn" onClick={() => setCollapsed((v) => !v)}>{collapsed ? '展开' : '折叠'}</button>
+          <div className="ma-right">
+            {stats?.show && (
+              <div className="ma-stats ma-stats-head">
+                {stats.model && (
+                  <span className="ma-chip" title="模型/Agent">
+                    <Cpu size={12} />
+                    <span className="ma-chip-text">{stats.model}</span>
+                  </span>
+                )}
+                <span className="ma-chip" title="调用次数">
+                  <Hash size={12} />
+                  <span className="ma-chip-text">{stats.calls}</span>
+                </span>
+                <span className="ma-chip" title="输入 tokens">
+                  <LogIn size={12} />
+                  <span className="ma-chip-text">{stats.inputTokens}</span>
+                </span>
+                <span className="ma-chip" title="输出 tokens">
+                  <LogOut size={12} />
+                  <span className="ma-chip-text">{stats.outputTokens}</span>
+                </span>
+              </div>
+            )}
+            <button className="ma-linkbtn" onClick={() => setCollapsed((v) => !v)}>{collapsed ? '展开' : '折叠'}</button>
+          </div>
         </div>
         {collapsed ? (
           <div className="ma-muted ma-preview">{preview}</div>
@@ -278,5 +327,93 @@ function getIcon(cat: Category): LucideIcon {
     case 'aggregate': return Puzzle;
     case 'pipeline': return GitMerge;
     default: return Settings;
+  }
+}
+
+// Compute statistics summary for supported events
+function computeStats(m: WebSocketMessage): {
+  show: boolean;
+  model?: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+} | null {
+  const ev = String(m.event || '');
+  try {
+    let statsList: any[] | undefined;
+    let model: string | undefined;
+    let agentName: string | undefined;
+    if (ev === 'plan.completed' || ev.endsWith('plan.completed')) {
+      const c: any = (m as any).content;
+      if (Array.isArray(c?.statistics)) statsList = c.statistics;
+      // track agent name set
+      if (statsList && statsList.length > 0) {
+        const agents = Array.from(new Set(statsList.map((x) => x?.agent).filter(Boolean)));
+        agentName = agents.length === 1 ? String(agents[0]) : undefined;
+      }
+    } else if (ev === 'solver.completed' || ev.endsWith('solver.completed')) {
+      const c: any = (m as any).content;
+      const res: any = c?.result;
+      if (Array.isArray(res?.statistics)) statsList = res.statistics;
+      agentName = typeof res?.agent_name === 'string' ? res.agent_name : undefined;
+      // Prefer server-provided model on result
+      if (typeof res?.model === 'string' && res.model) {
+        model = res.model;
+      }
+    } else {
+      return null;
+    }
+    if (!statsList || statsList.length === 0) {
+      // Fallback: if solver.completed carries model but no per-call stats,
+      // still display the model chip with zeros.
+      if ((ev === 'solver.completed' || ev.endsWith('solver.completed')) && model) {
+        return { show: true, model, calls: 0, inputTokens: 0, outputTokens: 0 };
+      }
+      return null;
+    }
+    // Prefer model from per-call entries
+    const models = Array.from(
+      new Set(
+        statsList
+          .map((x) => x?.model || x?.metadata?.model)
+          .filter((v: any) => typeof v === 'string' && v)
+      )
+    );
+    if (!model) {
+      if (models.length === 1) {
+        model = String(models[0]);
+      } else if (models.length > 1) {
+        model = models.join(', ');
+      }
+    }
+    // Fallback for plan.completed: try metrics snapshot mapping by agent
+    if (!model && (ev === 'plan.completed' || ev.endsWith('plan.completed'))) {
+      const c: any = (m as any).content;
+      const metrics = c?.metrics;
+      const byAgent = metrics?.models?.by_agent;
+      const agentMap = agentName && byAgent ? byAgent[agentName] : undefined;
+      if (agentMap && typeof agentMap === 'object') {
+        const keys = Object.keys(agentMap);
+        if (keys.length === 1) model = keys[0];
+        else if (keys.length > 1) model = keys.join(', ');
+      }
+    }
+    let input = 0;
+    let output = 0;
+    for (const it of statsList) {
+      const i = Number(it?.input_tokens ?? 0);
+      const o = Number(it?.output_tokens ?? 0);
+      if (Number.isFinite(i)) input += i;
+      if (Number.isFinite(o)) output += o;
+    }
+    return {
+      show: true,
+      model,
+      calls: statsList.length,
+      inputTokens: input,
+      outputTokens: output,
+    };
+  } catch {
+    return null;
   }
 }

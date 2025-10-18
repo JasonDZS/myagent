@@ -48,6 +48,8 @@ class PlanEvents:
     COMPLETED = "plan.completed"
     CANCELLED = "plan.cancelled"
     COERCION_ERROR = "plan.coercion_error"
+    STEP_COMPLETED = "plan.step_completed"      # 规划步骤完成
+    VALIDATION_ERROR = "plan.validation_error"  # 规划验证错误
 
 
 class SolverEvents:
@@ -57,6 +59,9 @@ class SolverEvents:
     COMPLETED = "solver.completed"
     CANCELLED = "solver.cancelled"
     RESTARTED = "solver.restarted"
+    PROGRESS = "solver.progress"        # 求解中的进度更新
+    STEP_FAILED = "solver.step_failed"  # 单个步骤失败
+    RETRY = "solver.retry"              # 重试开始
 
 
 class AggregateEvents:
@@ -103,6 +108,17 @@ class SystemEvents:
     NOTICE = "system.notice"
     HEARTBEAT = "system.heartbeat"
     ERROR = "system.error"
+
+
+class ErrorEvents:
+    """Error and recovery events for comprehensive error handling"""
+
+    EXECUTION = "error.execution"             # 执行错误
+    VALIDATION = "error.validation"           # 验证错误
+    TIMEOUT = "error.timeout"                 # 超时错误
+    RECOVERY_STARTED = "error.recovery_started"      # 恢复开始
+    RECOVERY_SUCCESS = "error.recovery_success"      # 恢复成功
+    RECOVERY_FAILED = "error.recovery_failed"        # 恢复失败
 
 
 def _truncate(text: str, limit: int = 160) -> str:
@@ -182,6 +198,11 @@ def _derive_show_content(event_type: str, content: Any, metadata: dict[str, Any]
             return base
         if et == PlanEvents.CANCELLED:
             return "规划已取消"
+        if et == PlanEvents.STEP_COMPLETED:
+            step_name = md.get("step_name") if isinstance(md, dict) else None
+            return f"规划步骤完成：{step_name}" if step_name else "规划步骤完成"
+        if et == PlanEvents.VALIDATION_ERROR:
+            return f"规划验证错误：{content if isinstance(content, str) else '验证失败'}"
 
         # Solver
         if et == SolverEvents.START:
@@ -204,6 +225,18 @@ def _derive_show_content(event_type: str, content: Any, metadata: dict[str, Any]
             return "求解已取消"
         if et == SolverEvents.RESTARTED:
             return "任务已重启"
+        if et == SolverEvents.PROGRESS:
+            progress = md.get("progress_percent") if isinstance(md, dict) else None
+            if progress is not None:
+                return f"求解进度：{progress}%"
+            return "求解中…"
+        if et == SolverEvents.STEP_FAILED:
+            step_name = md.get("step_name") if isinstance(md, dict) else None
+            return f"求解步骤失败：{step_name}" if step_name else "求解步骤失败"
+        if et == SolverEvents.RETRY:
+            attempt = md.get("attempt", 1) if isinstance(md, dict) else 1
+            max_attempts = md.get("max_attempts", 3) if isinstance(md, dict) else 3
+            return f"重试中…（{attempt}/{max_attempts}）"
 
         # Aggregate
         if et == AggregateEvents.START:
@@ -214,6 +247,23 @@ def _derive_show_content(event_type: str, content: Any, metadata: dict[str, Any]
         # Pipeline
         if et == PipelineEvents.COMPLETED:
             return "流水线完成"
+
+        # Error events
+        if et == ErrorEvents.EXECUTION:
+            return f"执行错误：{content if isinstance(content, str) else '执行失败'}"
+        if et == ErrorEvents.VALIDATION:
+            return f"验证错误：{content if isinstance(content, str) else '数据验证失败'}"
+        if et == ErrorEvents.TIMEOUT:
+            timeout_sec = md.get("timeout_seconds") if isinstance(md, dict) else None
+            if timeout_sec:
+                return f"超时错误：操作超过 {timeout_sec} 秒"
+            return "超时错误"
+        if et == ErrorEvents.RECOVERY_STARTED:
+            return "开始恢复…"
+        if et == ErrorEvents.RECOVERY_SUCCESS:
+            return "恢复成功"
+        if et == ErrorEvents.RECOVERY_FAILED:
+            return f"恢复失败：{content if isinstance(content, str) else '无法恢复'}"
 
         return None
     except Exception:
