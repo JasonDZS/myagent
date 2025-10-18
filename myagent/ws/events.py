@@ -65,7 +65,22 @@ class UserEvents:
     - MESSAGE: content = user query text, metadata = source/client info
     - RESPONSE: content = {approved, feedback}, metadata = response context
     - ACK: metadata = {last_seq, received_count} for reliable delivery
-    - RECONNECT*: content/metadata = session recovery info
+
+    Reconnection Events (Three Distinct Types):
+    - RECONNECT: Simple session resume (short disconnect, <60s)
+      · Payload: {session_id}
+      · Use: Connection briefly lost, session still valid
+
+    - RECONNECT_WITH_STATE: Stateful recovery with client snapshot (<60s-24h)
+      · Payload: {signed_state, last_seq, last_event_id}
+      · Use: Extended disconnect, client has exported state
+      · Creates NEW session (verifies client state integrity)
+
+    - REQUEST_STATE: Explicit state export request (planned operation)
+      · Payload: {session_id} only
+      · Use: Client wants to save session before closing
+      · Does NOT trigger reconnection, purely export
+      · Response includes signed_state for later RECONNECT_WITH_STATE
     """
 
     MESSAGE = "user.message"

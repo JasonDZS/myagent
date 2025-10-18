@@ -197,10 +197,19 @@ class AgentWebSocketServer:
             await self._handle_replan(websocket, connection_id, session_id, message)
 
         elif event_type == UserEvents.RECONNECT_WITH_STATE:
+            # RECONNECT_WITH_STATE: Stateful recovery with client-provided state export
+            # Use Case: Extended disconnect (60s-24h) where event buffer may be cleared
+            # Workflow: Verify state signature → Create new session → Restore state → Replay events
+            # See: docs/ws-protocol/stable/RECONNECT_CLARIFICATION.md for detailed flow
             logger.info("Handling RECONNECT_WITH_STATE event")
             await self._handle_reconnect_with_state(websocket, connection_id, message)
 
         elif event_type == UserEvents.REQUEST_STATE and session_id:
+            # REQUEST_STATE: Explicit state export request (not reconnection)
+            # Use Case: Client intentionally wants to save session state
+            # Workflow: Verify session → Create snapshot → Sign/encrypt → Send signed_state
+            # Client can later use signed_state with RECONNECT_WITH_STATE after disconnect
+            # See: docs/ws-protocol/stable/RECONNECT_CLARIFICATION.md for detailed flow
             logger.info(f"Handling REQUEST_STATE event for session {session_id}")
             await self._handle_request_state(websocket, connection_id, session_id, message)
 
@@ -891,7 +900,29 @@ class AgentWebSocketServer:
         connection_id: str,
         message: dict[str, Any],
     ) -> None:
-        """Handle reconnection with client-provided state."""
+        """
+        Handle reconnection with client-provided state export.
+
+        This is for extended offline periods (60s - 24h) where the event buffer
+        on the server may have been cleared. The client provides a cryptographically
+        signed state snapshot that was previously exported via REQUEST_STATE or
+        STATE_EXPORTED event.
+
+        Workflow:
+        1. Extract signed_state from message
+        2. Verify signature for authenticity (not tampered)
+        3. Validate state is not expired
+        4. Create NEW session with new ID (security: don't reuse old ID)
+        5. Restore session state from snapshot
+        6. Replay any buffered events since last_seq
+        7. Send STATE_RESTORED confirmation
+
+        Key Difference from RECONNECT:
+        - RECONNECT: Resumes existing session (simple re-connection)
+        - RECONNECT_WITH_STATE: Creates new session from client state (recovery)
+
+        See: docs/ws-protocol/stable/RECONNECT_CLARIFICATION.md
+        """
         try:
             signed_state = message.get("signed_state")
             if not signed_state:
@@ -1043,7 +1074,39 @@ class AgentWebSocketServer:
         session_id: str,
         message: dict[str, Any],
     ) -> None:
-        """Handle request to export current session state."""
+        """
+        Handle explicit request to export current session state.
+
+        This is NOT a reconnection operation. This is a client-initiated request
+        to get a state snapshot for persistence (e.g., before intentionally closing
+        the app). The client can later use this snapshot with RECONNECT_WITH_STATE
+        to resume.
+
+        Workflow:
+        1. Verify session exists and is active
+        2. Verify connection ownership (session belongs to this connection)
+        3. Create state snapshot of current session
+        4. Sign/encrypt the snapshot for integrity
+        5. Send STATE_EXPORTED event with signed_state in metadata
+        6. Client saves signed_state locally
+        7. Connection remains unchanged (NOT a reconnection)
+
+        Typical Usage Pattern:
+        1. User clicks "Save Session" button
+        2. Client sends REQUEST_STATE
+        3. Server sends STATE_EXPORTED with signed_state
+        4. Client saves signed_state to localStorage/preferences
+        5. User can now close app safely
+        6. Later: User reopens app
+        7. Client sends RECONNECT_WITH_STATE with saved signed_state
+        8. Server verifies and restores session
+
+        Key Differences from RECONNECT_WITH_STATE:
+        - REQUEST_STATE: Export request (connection active, planned operation)
+        - RECONNECT_WITH_STATE: Recovery after disconnect (connection was lost)
+
+        See: docs/ws-protocol/stable/RECONNECT_CLARIFICATION.md
+        """
         try:
             session = self.sessions.get(session_id)
             if not session:
