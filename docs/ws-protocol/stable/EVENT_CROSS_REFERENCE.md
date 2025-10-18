@@ -87,7 +87,7 @@ This document provides a comprehensive mapping of all WebSocket events across th
 | agent.final_answer | ✅ Line 175 | ✅ Docstring | ✅ Lines 770-792 | ✅ Lines 350-363 | ✅ | 🟢 Complete |
 | agent.user_confirm | ✅ Line 176 | ✅ Docstring | ✅ Lines 796-822 | ✅ Lines 365-382 | ✅ | 🟢 Complete |
 | agent.session_created | ✅ Line 180 | ✅ Docstring | ✅ (in EVENT_PAYLOADS.md) | ✅ Lines 384-392 | ✅ | 🟡 Missing detailed spec |
-| agent.session_ended | ✅ Line 181 | ✅ Docstring | ✅ Lines 1156-1189 | ⚠️ Not in ts | ✅ | 🟡 TS Type Missing |
+| agent.session_end | ✅ Line 181 | ✅ Docstring | ✅ Lines 1156-1189 | ✅ Present | ✅ | 🟢 Complete |
 | agent.llm_message | ✅ Line 182 | ✅ Docstring | ✅ Lines 1193-1229 | ⚠️ Not in ts | ✅ | 🟡 TS Type Missing |
 | agent.state_exported | ✅ Line 183 | ✅ Docstring | ✅ Lines 1233-1278 | ⚠️ Not in ts | ✅ | 🟡 TS Type Missing |
 | agent.state_restored | ✅ Line 184 | ✅ Docstring | ✅ Lines 1282-1317 | ⚠️ Not in ts | ✅ | 🟡 TS Type Missing |
@@ -191,7 +191,7 @@ This document provides a comprehensive mapping of all WebSocket events across th
   - Code: `events.py:176` | Docs: `EVENT_PAYLOADS_DETAILED.md:796` | Types: `EVENT_TYPES.ts:365`
 - **agent.session_created** - Session started
   - Code: `events.py:180` | Docs: `EVENT_PAYLOADS.md` | Types: `EVENT_TYPES.ts:384`
-- **agent.session_ended** - Session closed
+- **agent.session_end** - Session closed
   - Code: `events.py:181` | Docs: `EVENT_PAYLOADS_DETAILED.md:1156` | Types: ⚠️ Missing
 - **agent.llm_message** - Raw LLM output
   - Code: `events.py:182` | Docs: `EVENT_PAYLOADS_DETAILED.md:1193` | Types: ⚠️ Missing
@@ -228,33 +228,18 @@ This document provides a comprehensive mapping of all WebSocket events across th
 
 ## Documentation Gaps & Status
 
-### Gaps Identified
+### Current Status (v1.0.1)
 
-#### 1. Missing TypeScript Type Definitions (4 types)
-These events have Python definitions and payload documentation but lack TypeScript interfaces in EVENT_TYPES.ts:
+- TypeScript definitions: 100% coverage in `EVENT_TYPES.ts` for documented events.
+- Event name alignment: `agent.session_end` is the canonical name (aligned across docs and types).
+- Field conventions: Documented in `FIELD_CONVENTIONS.md` (units, naming, required/optional).
 
-| Event | Location in Docs | Fix Required |
-|-------|------------------|--------------|
-| plan.cancelled | EVENT_PAYLOADS_DETAILED.md:1323 | Add `PlanCancelled` interface to EVENT_TYPES.ts |
-| plan.coercion_error | EVENT_PAYLOADS_DETAILED.md:1370 | Add `PlanCoercionError` interface to EVENT_TYPES.ts |
-| solver.cancelled | EVENT_PAYLOADS_DETAILED.md:1415 | Add `SolverCancelled` interface to EVENT_TYPES.ts |
-| solver.restarted | EVENT_PAYLOADS_DETAILED.md:1457 | Add `SolverRestarted` interface to EVENT_TYPES.ts |
-| agent.session_ended | EVENT_PAYLOADS_DETAILED.md:1156 | Add `AgentSessionEnded` interface to EVENT_TYPES.ts |
-| agent.llm_message | EVENT_PAYLOADS_DETAILED.md:1193 | Add `AgentLLMMessage` interface to EVENT_TYPES.ts |
-| agent.state_exported | EVENT_PAYLOADS_DETAILED.md:1233 | Add `AgentStateExported` interface to EVENT_TYPES.ts |
-| agent.state_restored | EVENT_PAYLOADS_DETAILED.md:1282 | Add `AgentStateRestored` interface to EVENT_TYPES.ts |
+### Notes
 
-**Total TypeScript Gap**: 8 events
+- Show content display text is implemented in `myagent/ws/events.py` for primary events.
+- Aggregate & Pipeline events are defined in code and referenced in docs; detailed payload spec can be expanded in future iterations if needed.
 
-#### 2. Show Content Display Text
-- **Status**: ✅ Complete in `events.py` (_derive_show_content function, lines 228-367)
-- **Coverage**: All 31 main events have Chinese display text
-- **Missing**: Chinese text for newly added events (plan.cancelled, plan.coercion_error, solver.cancelled, solver.restarted, agent.session_ended, agent.llm_message, agent.state_exported, agent.state_restored)
-
-#### 3. Aggregate & Pipeline Events
-- **Status**: ⚠️ Partially documented
-- **Location**: Defined in `events.py` (lines 144-154)
-- **Documentation**: In EVENT_PAYLOADS.md but not in EVENT_PAYLOADS_DETAILED.md
+See `CHANGELOG.md` for changes since v1.0.0.
 
 ---
 

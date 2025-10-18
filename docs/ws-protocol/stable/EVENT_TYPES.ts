@@ -192,11 +192,44 @@ export interface PlanValidationError extends EventProtocol {
   };
 }
 
+export interface PlanCancelled extends EventProtocol {
+  session_id: string;
+  step_id: string;
+  event: "plan.cancelled";
+  content?: string;
+  metadata: {
+    reason: "user_request" | "timeout" | "error" | "resource_limit";
+    partial_plan?: Array<{
+      id: string;
+      title: string;
+      description: string;
+    }>;
+    cancellation_time_ms: number;
+  };
+}
+
+export interface PlanCoercionError extends EventProtocol {
+  session_id: string;
+  step_id: string;
+  event: "plan.coercion_error";
+  content?: string;
+  metadata: {
+    error_code: string;
+    raw_output?: string;
+    error_type: string;
+    recovery_action: "retry" | "manual_input" | "fallback" | "abort";
+    attempt?: number;
+    max_attempts?: number;
+  };
+}
+
 export type PlanEvent =
   | PlanStart
   | PlanCompleted
   | PlanStepCompleted
-  | PlanValidationError;
+  | PlanValidationError
+  | PlanCancelled
+  | PlanCoercionError;
 
 // ============================================================================
 // Solver Events (Server → Client)
@@ -281,12 +314,42 @@ export interface SolverRetry extends EventProtocol {
   };
 }
 
+export interface SolverCancelled extends EventProtocol {
+  session_id: string;
+  step_id: string;
+  event: "solver.cancelled";
+  content?: string;
+  metadata: {
+    task_id: string;
+    reason: "user_request" | "dependency_failed" | "timeout" | "resource_limit";
+    execution_time_ms: number;
+    partial_result?: Record<string, any>;
+  };
+}
+
+export interface SolverRestarted extends EventProtocol {
+  session_id: string;
+  step_id: string;
+  event: "solver.restarted";
+  content?: string;
+  metadata: {
+    task_id: string;
+    previous_error?: string;
+    attempt: number;
+    max_attempts: number;
+    reason: "retry_after_error" | "user_request" | "escalation";
+    backoff_ms: number;
+  };
+}
+
 export type SolverEvent =
   | SolverStart
   | SolverProgress
   | SolverCompleted
   | SolverStepFailed
-  | SolverRetry;
+  | SolverRetry
+  | SolverCancelled
+  | SolverRestarted;
 
 // ============================================================================
 // Agent Events (Server → Client)
@@ -391,13 +454,54 @@ export interface AgentSessionCreated extends EventProtocol {
   };
 }
 
-export interface AgentSessionEnded extends EventProtocol {
+export interface AgentSessionEnd extends EventProtocol {
   session_id: string;
-  event: "agent.session_ended";
+  event: "agent.session_end";
   content: string;
   metadata: {
     reason: string;
     total_duration_ms: number;
+  };
+}
+
+export interface AgentLLMMessage extends EventProtocol {
+  session_id: string;
+  step_id: string;
+  event: "agent.llm_message";
+  content: string;
+  metadata: {
+    model: string;
+    message_id?: string;
+    role?: "user" | "assistant" | "system";
+    index?: number;
+    tokens?: number;
+  };
+}
+
+export interface AgentStateExported extends EventProtocol {
+  session_id: string;
+  event: "agent.state_exported";
+  content?: {
+    exported_state: Record<string, any>;
+  };
+  metadata: {
+    exported_at: string;
+    valid_until: string;
+    state_size_bytes?: number;
+    checksum?: string;
+  };
+}
+
+export interface AgentStateRestored extends EventProtocol {
+  session_id: string;
+  event: "agent.state_restored";
+  content?: string;
+  metadata: {
+    restored_at: string;
+    restoration_time_ms: number;
+    previous_stage: string;
+    recovered_tasks?: number;
+    state_integrity: "verified" | "partial" | "failed";
   };
 }
 
@@ -409,7 +513,10 @@ export type AgentEvent =
   | AgentFinalAnswer
   | AgentUserConfirm
   | AgentSessionCreated
-  | AgentSessionEnded;
+  | AgentSessionEnd
+  | AgentLLMMessage
+  | AgentStateExported
+  | AgentStateRestored;
 
 // ============================================================================
 // System Events (Bidirectional)
@@ -439,6 +546,18 @@ export interface SystemHeartbeat extends EventProtocol {
   };
 }
 
+export interface SystemNotice extends EventProtocol {
+  event: "system.notice";
+  content: {
+    message: string;
+    event_list?: Array<Record<string, any>>;
+  };
+  metadata: {
+    type: "info" | "warning" | "maintenance";
+    severity: "low" | "medium" | "high";
+  };
+}
+
 export interface SystemError extends EventProtocol {
   event: "system.error";
   content: string;
@@ -451,6 +570,7 @@ export interface SystemError extends EventProtocol {
 export type SystemEvent =
   | SystemConnected
   | SystemHeartbeat
+  | SystemNotice
   | SystemError;
 
 // ============================================================================
@@ -625,6 +745,8 @@ export const PLAN_EVENTS = {
   COMPLETED: "plan.completed" as const,
   STEP_COMPLETED: "plan.step_completed" as const,
   VALIDATION_ERROR: "plan.validation_error" as const,
+  CANCELLED: "plan.cancelled" as const,
+  COERCION_ERROR: "plan.coercion_error" as const,
 };
 
 export const SOLVER_EVENTS = {
@@ -633,6 +755,8 @@ export const SOLVER_EVENTS = {
   COMPLETED: "solver.completed" as const,
   STEP_FAILED: "solver.step_failed" as const,
   RETRY: "solver.retry" as const,
+  CANCELLED: "solver.cancelled" as const,
+  RESTARTED: "solver.restarted" as const,
 };
 
 export const AGENT_EVENTS = {
@@ -643,11 +767,15 @@ export const AGENT_EVENTS = {
   FINAL_ANSWER: "agent.final_answer" as const,
   USER_CONFIRM: "agent.user_confirm" as const,
   SESSION_CREATED: "agent.session_created" as const,
-  SESSION_ENDED: "agent.session_ended" as const,
+  SESSION_END: "agent.session_end" as const,
+  LLM_MESSAGE: "agent.llm_message" as const,
+  STATE_EXPORTED: "agent.state_exported" as const,
+  STATE_RESTORED: "agent.state_restored" as const,
 };
 
 export const SYSTEM_EVENTS = {
   CONNECTED: "system.connected" as const,
+  NOTICE: "system.notice" as const,
   HEARTBEAT: "system.heartbeat" as const,
   ERROR: "system.error" as const,
 };

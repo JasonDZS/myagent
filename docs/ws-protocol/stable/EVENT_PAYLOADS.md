@@ -2,6 +2,8 @@
 
 Complete payload specifications for all WebSocket events.
 
+For field naming, units, and required/optional semantics, see `FIELD_CONVENTIONS.md`.
+
 ## User Events
 
 ### user.message
@@ -312,7 +314,8 @@ Planning completed successfully, tasks identified.
     plan_summary: "Create a 5-slide AI presentation with formatting",
     plan_reasoning: "Break down into content generation, styling, and export",
     llm_calls: 2,
-    tokens_used: {input: 1200, output: 800}
+    tokens_used: {input: 1200, output: 800},
+    planning_time_ms: 5400
   },
   show_content: "规划完成（3 个任务）：Create a 5-slide AI presentation..."
 }

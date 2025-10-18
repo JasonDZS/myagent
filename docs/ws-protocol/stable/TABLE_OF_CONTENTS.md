@@ -81,6 +81,15 @@ Complete WebSocket event protocol documentation for MyAgent. This folder contain
 
 ---
 
+## 📖 Reference & Guides
+
+- [FIELD_CONVENTIONS.md](./FIELD_CONVENTIONS.md) — Field naming, units, required/optional semantics, IDs
+- [EVENT_TYPES.ts](./EVENT_TYPES.ts) — TypeScript interfaces and event constants for frontend use
+- [PAYLOAD_VALIDATION_GUIDE.md](./PAYLOAD_VALIDATION_GUIDE.md) — Validation rules, examples, generators
+- [EVENT_CROSS_REFERENCE.md](./EVENT_CROSS_REFERENCE.md) — Coverage mapping across code and docs
+- [VERSIONING.md](./VERSIONING.md) — Versioning policy and compatibility guarantees
+- [CHANGELOG.md](./CHANGELOG.md) — Release notes for protocol changes
+
 ## 🔗 Quick Navigation
 
 ### By Task

@@ -46,6 +46,8 @@ interface EventProtocol {
   - Use for: Statistics, context, processing instructions
   - Examples: execution times, token counts, error codes
 
+See also: `FIELD_CONVENTIONS.md` for naming, units, and required/optional field semantics.
+
 ---
 
 ## User Events
@@ -1153,7 +1155,7 @@ class PlanCompleted:
 
 ## Additional Agent Events
 
-### agent.session_ended
+### agent.session_end
 
 **Purpose**: Notify client that session has ended
 
@@ -1161,7 +1163,7 @@ class PlanCompleted:
 ```typescript
 {
   session_id: string;
-  event: "agent.session_ended";
+  event: "agent.session_end";
   content?: string;
   metadata: {
     reason: "user_request" | "timeout" | "error" | "completion";
@@ -1176,7 +1178,7 @@ class PlanCompleted:
 ```json
 {
   "session_id": "sess_xyz789",
-  "event": "agent.session_ended",
+  "event": "agent.session_end",
   "timestamp": "2024-10-18T14:45:00Z",
   "content": "Session ended successfully",
   "metadata": {
@@ -1536,7 +1538,7 @@ class PlanCompleted:
 - [x] agent.final_answer
 - [x] agent.user_confirm
 - [x] agent.session_created
-- [x] agent.session_ended
+- [x] agent.session_end
 - [x] agent.llm_message
 - [x] agent.state_exported
 - [x] agent.state_restored
@@ -1570,4 +1572,3 @@ class PlanCompleted:
 - **Error Events**: 7 types
 
 **Coverage**: 100% of events defined in `myagent/ws/events.py` now have complete payload specifications, TypeScript interfaces, and real examples.
-
