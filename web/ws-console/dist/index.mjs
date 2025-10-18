@@ -410,6 +410,21 @@ function MyAgentProvider(props) {
   const api = useMemo(() => ({
     state: derivedState,
     client: clientRef.current,
+    injectMessage: (message, opts) => {
+      try {
+        const now = (/* @__PURE__ */ new Date()).toISOString();
+        const resolvedSessionId = opts?.sessionId ?? (sessionId ?? derivedState.currentSessionId);
+        const msg = {
+          event_id: message.event_id ?? `mock.${Date.now()}.${Math.random().toString(16).slice(2, 8)}`,
+          ...message,
+          session_id: message.session_id ?? resolvedSessionId,
+          timestamp: message.timestamp ?? now
+        };
+        useSessionStore.getState().addMessage(resolvedSessionId, msg);
+      } catch (e) {
+        console.error("[injectMessage] failed", e);
+      }
+    },
     createSession: (content) => send({ event: "user.create_session", content }),
     sendUserMessage: (content) => {
       const resolvedSessionId = sessionId ?? derivedState.currentSessionId;
@@ -797,25 +812,37 @@ function computeStats(m) {
     let statsList;
     let model;
     let agentName;
-    if (ev === "plan.completed") {
+    if (ev === "plan.completed" || ev.endsWith("plan.completed")) {
       const c = m.content;
-      if (Array.isArray(c?.statistics)) statsList = c.statistics;
+      const md = m.metadata;
+      if (Array.isArray(md?.statistics)) statsList = md.statistics;
+      else if (Array.isArray(c?.statistics)) statsList = c.statistics;
       if (statsList && statsList.length > 0) {
         const agents = Array.from(new Set(statsList.map((x) => x?.agent).filter(Boolean)));
         agentName = agents.length === 1 ? String(agents[0]) : void 0;
       }
-    } else if (ev === "solver.completed") {
+    } else if (ev === "solver.completed" || ev.endsWith("solver.completed")) {
       const c = m.content;
       const res = c?.result;
-      if (Array.isArray(res?.statistics)) statsList = res.statistics;
+      const md = m.metadata;
+      if (Array.isArray(md?.statistics)) statsList = md.statistics;
+      else if (Array.isArray(res?.statistics)) statsList = res.statistics;
       agentName = typeof res?.agent_name === "string" ? res.agent_name : void 0;
       if (typeof res?.model === "string" && res.model) {
         model = res.model;
       }
+    } else if (ev === "pipeline.completed" || ev.endsWith("pipeline.completed")) {
+      const md = m.metadata;
+      if (Array.isArray(md?.statistics)) statsList = md.statistics;
     } else {
       return null;
     }
-    if (!statsList || statsList.length === 0) return null;
+    if (!statsList || statsList.length === 0) {
+      if ((ev === "solver.completed" || ev.endsWith("solver.completed")) && model) {
+        return { show: true, model, calls: 0, inputTokens: 0, outputTokens: 0 };
+      }
+      return null;
+    }
     const models = Array.from(
       new Set(
         statsList.map((x) => x?.model || x?.metadata?.model).filter((v) => typeof v === "string" && v)
@@ -828,9 +855,9 @@ function computeStats(m) {
         model = models.join(", ");
       }
     }
-    if (!model && ev === "plan.completed") {
-      const c = m.content;
-      const metrics = c?.metrics;
+    if (!model && (ev === "plan.completed" || ev.endsWith("plan.completed"))) {
+      const md = m.metadata;
+      const metrics = md?.metrics;
       const byAgent = metrics?.models?.by_agent;
       const agentMap = agentName && byAgent ? byAgent[agentName] : void 0;
       if (agentMap && typeof agentMap === "object") {

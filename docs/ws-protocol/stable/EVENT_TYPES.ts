@@ -159,6 +159,8 @@ export interface PlanCompleted extends EventProtocol {
     total_estimated_tokens: number;
     llm_calls: number;
     planning_time_ms: number;
+    statistics?: Array<Record<string, any>>;
+    metrics?: Record<string, any>;
   };
 }
 
@@ -281,6 +283,7 @@ export interface SolverCompleted extends EventProtocol {
     failed_tasks: number;
     total_execution_time_ms: number;
     total_tokens_used: number;
+    statistics?: Array<Record<string, any>>;
   };
 }
 
@@ -350,6 +353,51 @@ export type SolverEvent =
   | SolverRetry
   | SolverCancelled
   | SolverRestarted;
+
+// ============================================================================
+// Aggregate & Pipeline Events
+// ============================================================================
+
+export interface AggregateStart extends EventProtocol {
+  session_id: string;
+  event: "aggregate.start";
+  metadata: {
+    task_count: number;
+    completed_tasks: number;
+    failed_tasks: number;
+  };
+}
+
+export interface AggregateCompleted extends EventProtocol {
+  session_id: string;
+  event: "aggregate.completed";
+  content?: {
+    final_result: any;
+  };
+  metadata: {
+    aggregation_time_ms: number;
+    result_size_bytes: number;
+  };
+}
+
+export type AggregateEvent = AggregateStart | AggregateCompleted;
+
+export interface PipelineCompleted extends EventProtocol {
+  session_id: string;
+  event: "pipeline.completed";
+  metadata: {
+    total_time_ms: number;
+    plan_time_ms: number;
+    solve_time_ms: number;
+    aggregate_time_ms: number;
+    status: "success" | "partial_success" | "failed";
+    result_summary: string;
+    statistics?: Array<Record<string, any>>;
+    metrics?: Record<string, any>;
+  };
+}
+
+export type PipelineEvent = PipelineCompleted;
 
 // ============================================================================
 // Agent Events (Server → Client)
@@ -685,6 +733,8 @@ export type AnyEvent =
   | UserEvent
   | PlanEvent
   | SolverEvent
+  | AggregateEvent
+  | PipelineEvent
   | AgentEvent
   | SystemEvent
   | ErrorEvent;
@@ -723,6 +773,14 @@ export function isSystemEvent(event: EventProtocol): event is SystemEvent {
 
 export function isErrorEvent(event: EventProtocol): event is ErrorEvent {
   return event.event.startsWith("error.");
+}
+
+export function isAggregateEvent(event: EventProtocol): event is AggregateEvent {
+  return event.event.startsWith("aggregate.");
+}
+
+export function isPipelineEvent(event: EventProtocol): event is PipelineEvent {
+  return event.event.startsWith("pipeline.");
 }
 
 // ============================================================================
@@ -788,4 +846,13 @@ export const ERROR_EVENTS = {
   RECOVERY_STARTED: "error.recovery_started" as const,
   RECOVERY_SUCCESS: "error.recovery_success" as const,
   RECOVERY_FAILED: "error.recovery_failed" as const,
+};
+
+export const AGGREGATE_EVENTS = {
+  START: "aggregate.start" as const,
+  COMPLETED: "aggregate.completed" as const,
+};
+
+export const PIPELINE_EVENTS = {
+  COMPLETED: "pipeline.completed" as const,
 };

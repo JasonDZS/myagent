@@ -8,8 +8,12 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["react", "react-dom"]
+    "types": ["react", "react-dom"],
+    "baseUrl": ".",
+    "paths": {
+      "@myagent/ws-console": ["../src"],
+      "@myagent/ws-console/*": ["../src/*"]
+    }
   },
   "include": ["src/**/*"]
 }
-

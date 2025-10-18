@@ -7,6 +7,7 @@ interface Ctx {
   state: AgentConsoleState;
   client: AgentWSClient | null;
   // Commands
+  injectMessage: (message: WebSocketMessage, opts?: { sessionId?: string }) => void;
   createSession: (content?: any) => void;
   sendUserMessage: (content: any) => void;
   sendResponse: (stepId: string, content: any) => void;
@@ -210,6 +211,21 @@ export function MyAgentProvider(props: MyAgentProviderProps) {
   const api = useMemo<Ctx>(() => ({
     state: derivedState,
     client: clientRef.current,
+    injectMessage: (message: WebSocketMessage, opts?: { sessionId?: string }) => {
+      try {
+        const now = new Date().toISOString();
+        const resolvedSessionId = opts?.sessionId ?? (sessionId ?? derivedState.currentSessionId);
+        const msg: WebSocketMessage = {
+          event_id: message.event_id ?? `mock.${Date.now()}.${Math.random().toString(16).slice(2, 8)}`,
+          ...message,
+          session_id: message.session_id ?? resolvedSessionId,
+          timestamp: message.timestamp ?? now,
+        };
+        useSessionStore.getState().addMessage(resolvedSessionId, msg);
+      } catch (e) {
+        console.error('[injectMessage] failed', e);
+      }
+    },
     createSession: (content?: any) => send({ event: 'user.create_session', content }),
     sendUserMessage: (content: any) => {
       const resolvedSessionId = sessionId ?? derivedState.currentSessionId;

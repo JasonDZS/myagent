@@ -345,7 +345,10 @@ function computeStats(m: WebSocketMessage): {
     let agentName: string | undefined;
     if (ev === 'plan.completed' || ev.endsWith('plan.completed')) {
       const c: any = (m as any).content;
-      if (Array.isArray(c?.statistics)) statsList = c.statistics;
+      const md: any = (m as any).metadata;
+      // Prefer metadata.statistics; fallback to legacy content.statistics
+      if (Array.isArray(md?.statistics)) statsList = md.statistics;
+      else if (Array.isArray(c?.statistics)) statsList = c.statistics;
       // track agent name set
       if (statsList && statsList.length > 0) {
         const agents = Array.from(new Set(statsList.map((x) => x?.agent).filter(Boolean)));
@@ -354,12 +357,19 @@ function computeStats(m: WebSocketMessage): {
     } else if (ev === 'solver.completed' || ev.endsWith('solver.completed')) {
       const c: any = (m as any).content;
       const res: any = c?.result;
-      if (Array.isArray(res?.statistics)) statsList = res.statistics;
+      const md: any = (m as any).metadata;
+      // Prefer metadata.statistics; fallback to legacy result.statistics
+      if (Array.isArray(md?.statistics)) statsList = md.statistics;
+      else if (Array.isArray(res?.statistics)) statsList = res.statistics;
       agentName = typeof res?.agent_name === 'string' ? res.agent_name : undefined;
       // Prefer server-provided model on result
       if (typeof res?.model === 'string' && res.model) {
         model = res.model;
       }
+    } else if (ev === 'pipeline.completed' || ev.endsWith('pipeline.completed')) {
+      const md: any = (m as any).metadata;
+      if (Array.isArray(md?.statistics)) statsList = md.statistics;
+      // No single model to display; show totals only
     } else {
       return null;
     }
@@ -388,8 +398,8 @@ function computeStats(m: WebSocketMessage): {
     }
     // Fallback for plan.completed: try metrics snapshot mapping by agent
     if (!model && (ev === 'plan.completed' || ev.endsWith('plan.completed'))) {
-      const c: any = (m as any).content;
-      const metrics = c?.metrics;
+      const md: any = (m as any).metadata;
+      const metrics = md?.metrics;
       const byAgent = metrics?.models?.by_agent;
       const agentMap = agentName && byAgent ? byAgent[agentName] : undefined;
       if (agentMap && typeof agentMap === 'object') {

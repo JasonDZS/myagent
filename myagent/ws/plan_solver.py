@@ -809,11 +809,47 @@ class PlanSolverSessionAgent(BaseAgent):
 
     async def _progress_callback(self, event: str, payload: dict[str, Any]) -> None:
         content = self._make_serializable(payload)
+        metadata: dict[str, Any] | None = None
 
-        if not self.broadcast_tasks and event == PlanEvents.COMPLETED:
-            content = {k: v for k, v in content.items() if k != "tasks"}
+        # Move statistics/metrics into metadata for specific events
+        try:
+            if event == PlanEvents.COMPLETED:
+                # Optionally drop tasks from content based on broadcast setting
+                if not self.broadcast_tasks:
+                    content = {k: v for k, v in content.items() if k != "tasks"}
+                # Extract statistics/metrics
+                stats = content.pop("statistics", None)
+                metrics = content.pop("metrics", None)
+                m: dict[str, Any] = {}
+                if stats is not None:
+                    m["statistics"] = stats
+                if metrics is not None:
+                    m["metrics"] = metrics
+                metadata = m or None
 
-        await self._emit_event(event, content)
+            elif event == PipelineEvents.COMPLETED:
+                stats = content.pop("statistics", None)
+                metrics = content.pop("metrics", None)
+                m: dict[str, Any] = {}
+                if stats is not None:
+                    m["statistics"] = stats
+                if metrics is not None:
+                    m["metrics"] = metrics
+                metadata = m or None
+
+            elif event == SolverEvents.COMPLETED:
+                # Move per-task statistics from result to metadata
+                if isinstance(content, dict):
+                    res = content.get("result")
+                    if isinstance(res, dict) and "statistics" in res:
+                        stats = res.pop("statistics", None)
+                        if stats is not None:
+                            metadata = {"statistics": stats}
+        except Exception:
+            # Non-critical; continue without metadata reshaping if something goes wrong
+            metadata = metadata or None
+
+        await self._emit_event(event, content, metadata=metadata)
 
     async def _emit_event(self, event: str, content: Any, *, metadata: dict[str, Any] | None = None, step_id: str | None = None) -> None:
         session = get_ws_session_context()

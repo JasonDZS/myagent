@@ -94,6 +94,9 @@ declare class AgentWSClient {
 interface Ctx {
     state: AgentConsoleState;
     client: AgentWSClient | null;
+    injectMessage: (message: WebSocketMessage, opts?: {
+        sessionId?: string;
+    }) => void;
     createSession: (content?: any) => void;
     sendUserMessage: (content: any) => void;
     sendResponse: (stepId: string, content: any) => void;

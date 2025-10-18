@@ -390,13 +390,15 @@ Planning phase finished successfully.
       description: string;
       estimated_duration_sec?: number;
     }>;
-  },
+  };
   metadata: {
     task_count: number;
     plan_summary: string;
     total_estimated_tokens: number;
     llm_calls: number;
     planning_time_ms: number;
+    statistics?: Array<Record<string, any>>;  // Per-call LLM stats for planning stage
+    metrics?: Record<string, any>;            // Global snapshot (agents/tools/models)
   }
 }
 ```
@@ -426,7 +428,11 @@ Planning phase finished successfully.
     "plan_summary": "5-slide presentation with content generation and formatting",
     "total_estimated_tokens": 3200,
     "llm_calls": 2,
-    "planning_time_ms": 5400
+    "planning_time_ms": 5400,
+    "statistics": [
+      {"model": "gpt-4", "input_tokens": 800, "output_tokens": 350, "origin": "plan", "agent": "planner"}
+    ],
+    "metrics": {"agents": {"by_agent": {"planner": {"runs": 1}}}}
   }
 }
 ```
@@ -586,6 +592,7 @@ All tasks completed successfully.
     failed_tasks: number;
     total_execution_time_ms: number;
     total_tokens_used: number;
+    statistics?: Array<Record<string, any>>;  // Per-call LLM stats for the solver stage (all tasks)
   }
 }
 ```
@@ -917,6 +924,140 @@ Validation error occurred.
     field?: string;
     constraint?: string;
     recoverable: boolean;
+  }
+}
+```
+
+---
+
+## Aggregate Events
+
+Aggregation events are emitted by the server during the final aggregation stage after solver tasks complete.
+
+### aggregate.start
+
+Aggregation stage initiated.
+
+**Purpose**: Notify client that aggregation has started
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  event: "aggregate.start";
+  metadata: {
+    task_count: number;
+    completed_tasks: number;
+    failed_tasks: number;
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "event": "aggregate.start",
+  "timestamp": "2024-10-18T14:40:00Z",
+  "metadata": {
+    "task_count": 3,
+    "completed_tasks": 3,
+    "failed_tasks": 0
+  }
+}
+```
+
+---
+
+### aggregate.completed
+
+Aggregation completed successfully.
+
+**Purpose**: Deliver aggregated final result and aggregation stats
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  event: "aggregate.completed";
+  content?: {
+    final_result: any;  // Aggregated result from solver outputs
+  };
+  metadata: {
+    aggregation_time_ms: number;
+    result_size_bytes: number;
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "event": "aggregate.completed",
+  "timestamp": "2024-10-18T14:41:00Z",
+  "content": {
+    "final_result": {
+      "slides": [
+        {"title": "Intro", "content": "..."},
+        {"title": "Trends", "content": "..."}
+      ]
+    }
+  },
+  "metadata": {
+    "aggregation_time_ms": 5200,
+    "result_size_bytes": 125000
+  }
+}
+```
+
+---
+
+## Pipeline Events
+
+Pipeline events summarize the end-to-end lifecycle (plan → solve → aggregate).
+
+### pipeline.completed
+
+Full pipeline completed.
+
+**Purpose**: Report end-to-end timing breakdown and completion status
+
+**Payload Structure**:
+```typescript
+{
+  session_id: string;
+  event: "pipeline.completed";
+  metadata: {
+    total_time_ms: number;
+    plan_time_ms: number;
+    solve_time_ms: number;
+    aggregate_time_ms: number;
+    status: "success" | "partial_success" | "failed";
+    result_summary: string;
+    statistics?: Array<Record<string, any>>;  // Unified per-call stats across plan+solve
+    metrics?: Record<string, any>;            // Global snapshot (agents/tools/models)
+  };
+}
+```
+
+**Real Example**:
+```json
+{
+  "session_id": "sess_xyz789",
+  "event": "pipeline.completed",
+  "timestamp": "2024-10-18T14:41:05Z",
+  "metadata": {
+    "total_time_ms": 182000,
+    "plan_time_ms": 45000,
+    "solve_time_ms": 120000,
+    "aggregate_time_ms": 17000,
+    "status": "success",
+    "result_summary": "Generated 5-slide presentation successfully",
+    "statistics": [
+      {"model": "gpt-4", "input_tokens": 1200, "output_tokens": 600, "origin": "plan", "agent": "planner"}
+    ],
+    "metrics": {"models": {"by_model": {"gpt-4": {"calls": 2, "input_tokens": 1200, "output_tokens": 600}}}}
   }
 }
 ```

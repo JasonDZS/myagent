@@ -12,6 +12,10 @@ All notable changes to the stable WebSocket protocol documentation will be liste
 - Add `FIELD_CONVENTIONS.md` and `VERSIONING.md` for production-readiness.
 - Add `README.md` as the landing page for the stable protocol.
 - Add `planning_time_ms` to `plan.completed` in `EVENT_PAYLOADS.md` to match the detailed spec.
+- Move statistics/metrics into `metadata` for the following events and update UI/types/docs accordingly:
+  - `plan.completed`: `metadata.statistics`, `metadata.metrics`
+  - `solver.completed`: `metadata.statistics`
+  - `pipeline.completed`: `metadata.statistics`, `metadata.metrics`
 
 ## v1.0.0 (2024-10-18)
 
